@@ -128,12 +128,14 @@ latex_inline_quiz <- function(cfg, blocks, version) {
       stop("Question ", q$number, " is missing one or more options.", call. = FALSE)
     }
     c(
+      "\\begin{samepage}",
       sprintf("\\questionblock{%d}{%s}", q$number, tex_escape(q$question)),
       "\\begin{enumerate}[label=\\alph*., leftmargin=1.4em, itemsep=1pt, topsep=2pt]",
       sprintf("  \\item %s", tex_escape(opts)),
       "\\end{enumerate}",
       sprintf("\\answerline{%d}{%s}", q$number, bubble_row),
-      "\\vspace{5pt}"
+      "\\vspace{5pt}",
+      "\\end{samepage}"
     )
   }), use.names = FALSE)
 
