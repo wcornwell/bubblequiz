@@ -24,6 +24,7 @@ Commands:
   build                     versions + inline forms + calibrate
   preprocess <scan.pdf>     scanned PDF  -> page images + progress.csv
   mark --dir <folder>       grade scanned pages with the Claude vision API
+  mark-cv --dir <folder>    read calibrated bubbles without an API call
   score --dir <folder>      progress.csv + answer_key.csv -> results.csv
   check                     validate exam.yml and report the derived layout
 
@@ -154,6 +155,12 @@ bq_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
       mark_scans(o$dir, config, layout,
                  model   = o$model %||% "claude-sonnet-4-6",
                  dry_run = isTRUE(o[["dry-run"]]))
+    },
+
+    "mark-cv" = {
+      if (is.null(o$dir)) stop("Usage: bubblequiz mark-cv --dir <folder>", call. = FALSE)
+      mark_scans_cv(o$dir, config, layout,
+                    dry_run = isTRUE(o[["dry-run"]]))
     },
 
     "score" = {

@@ -4,7 +4,13 @@
 \alias{preprocess_scans}
 \title{Prepare a scanned bubble sheet PDF for marking}
 \usage{
-preprocess_scans(pdf, config = default_config_path(), dpi = 150, force = FALSE)
+preprocess_scans(
+  pdf,
+  config = default_config_path(),
+  dpi = 150,
+  format = "png",
+  force = FALSE
+)
 }
 \arguments{
 \item{pdf}{Path to the scanned PDF (one page per student).}
@@ -12,6 +18,8 @@ preprocess_scans(pdf, config = default_config_path(), dpi = 150, force = FALSE)
 \item{config}{Path to the exam config YAML, or a loaded config list.}
 
 \item{dpi}{Resolution for the extracted page images.}
+
+\item{format}{Image format for extracted pages, usually `"png"` or `"jpeg"`.}
 
 \item{force}{Re-extract even if the output folder already exists.}
 }

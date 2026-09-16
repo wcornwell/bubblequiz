@@ -118,6 +118,8 @@ parse_question_blocks <- function(path, cfg) {
 
 latex_inline_quiz <- function(cfg, blocks, version) {
   bubble_row <- paste0(sprintf("\\bub{%s}", cfg$options), collapse = "")
+  qr_payload <- sprintf("bubblequiz|course=%s|version=%s|questions=%s",
+                        cfg$course, version, paste(cfg$questions, collapse = ","))
   id_blanks <- paste0(rep("\\underline{\\hspace{1.6em}}", cfg$id$digits), collapse = "\\,")
   id_example <- paste0(cfg$id$prefix,
     substr(paste(rep("1234567890", 2), collapse = ""), 1, cfg$id$digits))
@@ -147,6 +149,7 @@ latex_inline_quiz <- function(cfg, blocks, version) {
     "\\usepackage{tikz}",
     "\\usepackage{xcolor}",
     "\\usepackage{enumitem}",
+    "\\usepackage[nolinks]{qrcode}",
     "\\pagestyle{empty}",
     "\\setlength{\\parindent}{0pt}",
     "\\setlength{\\parskip}{2pt}",
@@ -160,9 +163,16 @@ latex_inline_quiz <- function(cfg, blocks, version) {
     "  \\fill[black] ([xshift= 3mm, yshift=  3mm]current page.south west) rectangle ++( 5mm,  5mm);",
     "  \\fill[black] ([xshift=-8mm, yshift=  3mm]current page.south east) rectangle ++( 5mm,  5mm);",
     "\\end{tikzpicture}",
-    sprintf("{\\LARGE\\bfseries %s}\\hfill\\colorbox{black}{\\textcolor{white}{\\Large\\bfseries\\quad Version %s\\quad}}\\\\[2pt]",
-            tex_escape(cfg$title), tex_escape(version)),
-    sprintf("{\\large %s}\\hfill{%s}\\\\[3pt]", tex_escape(cfg$subtitle), tex_escape(cfg$date)),
+    "\\begin{minipage}[t]{0.74\\linewidth}",
+    sprintf("{\\LARGE\\bfseries %s}\\\\[2pt]", tex_escape(cfg$title)),
+    sprintf("{\\large %s}", tex_escape(cfg$subtitle)),
+    "\\end{minipage}\\hfill",
+    "\\begin{minipage}[t]{0.24\\linewidth}\\raggedleft",
+    sprintf("\\colorbox{black}{\\textcolor{white}{\\Large\\bfseries\\quad Version %s\\quad}}\\\\[2pt]",
+            tex_escape(version)),
+    sprintf("{\\small %s}\\\\[2pt]", tex_escape(cfg$date)),
+    sprintf("\\qrcode[height=1.35cm]{%s}", tex_escape(qr_payload)),
+    "\\end{minipage}\\\\[2pt]",
     "\\rule{\\linewidth}{1.2pt}",
     "\\begin{minipage}[t]{0.46\\linewidth}",
     "\\textbf{Name}\\quad\\underline{\\hspace{0.72\\linewidth}}\\\\[6pt]",

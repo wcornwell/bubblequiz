@@ -30,13 +30,15 @@ load_layout <- function(path = "output/layout.R") {
     stop("Calibrated layout not found: ", path,
          "\nRun `bubblequiz calibrate` first.", call. = FALSE)
   }
-  e <- new.env(parent = emptyenv())
+  e <- new.env(parent = baseenv())
   sys.source(path, envir = e)
   missing <- setdiff(c("ANSWER_X", "QUESTION_COL", "QUESTION_Y"), ls(e))
   if (length(missing) > 0) {
     stop("Layout file is missing: ", paste(missing, collapse = ", "), call. = FALSE)
   }
-  list(ANSWER_X = e$ANSWER_X, QUESTION_COL = e$QUESTION_COL, QUESTION_Y = e$QUESTION_Y)
+  out <- list(ANSWER_X = e$ANSWER_X, QUESTION_COL = e$QUESTION_COL, QUESTION_Y = e$QUESTION_Y)
+  attr(out, "path") <- normalizePath(path, mustWork = TRUE)
+  out
 }
 
 # ---------------------------------------------------------------------------
@@ -271,6 +273,8 @@ fit_bilinear_map <- function(src_uv, dst_xy) {
   ay <- as.numeric(solve(M, dst_xy[, "y"]))
 
   function(u, v) {
+    u <- as.numeric(u)
+    v <- as.numeric(v)
     b <- c(1, u, v, u * v)
     c(x = sum(ax * b), y = sum(ay * b))
   }
@@ -295,7 +299,7 @@ build_map_xy <- function(img_path) {
     map_xy     = if (!is.null(marker_pts)) {
       fit_bilinear_map(REG_MARKERS_REF, marker_pts)
     } else {
-      function(u, v) c(x = u * w, y = v * h)
+      function(u, v) c(x = as.numeric(u) * w, y = as.numeric(v) * h)
     },
     marker_ok  = !is.null(marker_pts)
   )
@@ -450,9 +454,344 @@ annotate_page <- function(img_path, parsed, marked_dir, cfg = NULL, layout = NUL
     }
   }
 
-  out_name <- sub("\\.jpe?g$", "-marked.jpeg", basename(img_path), ignore.case = TRUE)
+  out_name <- sub("\\.(jpe?g|png)$", "-marked.jpeg", basename(img_path), ignore.case = TRUE)
   magick::image_write(img, file.path(marked_dir, out_name), format = "jpeg", quality = 85)
   invisible(NULL)
+}
+
+ink_score <- function(gray, cx, cy, radius) {
+  h <- nrow(gray)
+  w <- ncol(gray)
+  x1 <- max(1L, cx - radius)
+  x2 <- min(w,  cx + radius)
+  y1 <- max(1L, cy - radius)
+  y2 <- min(h,  cy + radius)
+
+  patch <- gray[y1:y2, x1:x2, drop = FALSE]
+  xs <- seq.int(x1, x2)
+  ys <- seq.int(y1, y2)
+  mask <- outer(ys, xs, function(y, x) (x - cx)^2 + (y - cy)^2 <= radius^2)
+  vals <- patch[mask]
+  if (length(vals) == 0) return(NA_real_)
+  255 - mean(vals, na.rm = TRUE)
+}
+
+classify_bubble_row <- function(inks,
+                                min_ink = 35,
+                                min_gap = 12,
+                                double_gap = 8) {
+  inks <- sort(inks, decreasing = TRUE)
+  if (length(inks) == 0 || !all(is.finite(inks))) {
+    return(list(answer = "", uncertain = TRUE, note = "non-finite ink score"))
+  }
+  top <- inks[1]
+  second <- if (length(inks) >= 2) inks[2] else 0
+  spread <- max(inks) - min(inks)
+  choice <- names(inks)[1]
+
+  if (top < min_ink || spread < min_gap) {
+    return(list(answer = "", uncertain = FALSE, note = "blank"))
+  }
+  if (second >= min_ink && (top - second) < double_gap) {
+    return(list(answer = paste0(choice, "*"), uncertain = TRUE,
+                note = sprintf("ambiguous row: top=%s %.1f, second=%s %.1f",
+                               names(inks)[1], top, names(inks)[2], second)))
+  }
+  list(answer = choice, uncertain = FALSE, note = "")
+}
+
+read_answers_cv <- function(img_path, cfg, layout) {
+  ctx <- build_map_xy(img_path)
+  radius <- max(4L, as.integer(ctx$w * 0.0048))
+  answers <- stats::setNames(vector("list", length(cfg$questions)),
+                             as.character(cfg$questions))
+  notes <- character(0)
+  inks_by_q <- list()
+
+  for (q in cfg$questions) {
+    q_chr <- as.character(q)
+    col <- layout$QUESTION_COL[q_chr]
+    y_pos <- layout$QUESTION_Y[q_chr]
+    if (is.null(col) || is.na(col) || is.null(y_pos) || is.na(y_pos)) {
+      answers[[q_chr]] <- ""
+      notes <- c(notes, sprintf("Q%s missing layout coordinate", q_chr))
+      next
+    }
+
+    inks <- vapply(cfg$options, function(letter) {
+      x_pos <- layout$ANSWER_X[[col]][letter]
+      if (is.null(x_pos) || is.na(x_pos)) return(NA_real_)
+      pt <- ctx$map_xy(x_pos, y_pos)
+      ink_score(ctx$gray, as.integer(pt["x"]), as.integer(pt["y"]), radius)
+    }, numeric(1))
+    names(inks) <- cfg$options
+    inks_by_q[[q_chr]] <- inks
+
+    cls <- classify_bubble_row(inks)
+    answers[[q_chr]] <- cls$answer
+    if (nzchar(cls$note) && cls$note != "blank") {
+      notes <- c(notes, sprintf("Q%s %s", q_chr, cls$note))
+    }
+  }
+
+  list(answers = answers, notes = notes, inks = inks_by_q, marker_ok = ctx$marker_ok)
+}
+
+load_id_grid_from_form <- function(form_pdf, cfg) {
+  if (!file.exists(form_pdf)) return(NULL)
+  txt <- pdftools::pdf_data(form_pdf, font_info = TRUE)[[1]]
+  txt$xc <- (txt$x + txt$width / 2) / PAGE_W
+  txt$yc <- (txt$y + txt$height / 2) / PAGE_H
+  digits <- txt[txt$text %in% as.character(0:9) &
+                  txt$font_size < 7, , drop = FALSE]
+  if (nrow(digits) < cfg$id$digits * 10) return(NULL)
+
+  x_centers <- sort(unique(round(digits$xc, 4)))
+  y_centers <- sort(unique(round(digits$yc, 4)))
+  if (length(x_centers) < cfg$id$digits || length(y_centers) < 10) return(NULL)
+  x_centers <- x_centers[seq_len(cfg$id$digits)]
+  y_centers <- y_centers[seq_len(10)]
+  list(
+    x = stats::setNames(x_centers, seq_len(cfg$id$digits)),
+    y = stats::setNames(y_centers, as.character(0:9))
+  )
+}
+
+read_zid_cv <- function(img_path, cfg, form_pdf) {
+  grid <- load_id_grid_from_form(form_pdf, cfg)
+  if (is.null(grid)) {
+    return(list(zid = NA_character_, uncertain = TRUE,
+                note = "zID grid coordinates unavailable"))
+  }
+  ctx <- build_map_xy(img_path)
+  radius <- max(4L, as.integer(ctx$w * 0.0042))
+
+  digits <- character(cfg$id$digits)
+  notes <- character(0)
+  for (col_i in seq_len(cfg$id$digits)) {
+    inks <- vapply(names(grid$y), function(digit) {
+      pt <- ctx$map_xy(grid$x[[as.character(col_i)]], grid$y[[digit]])
+      ink_score(ctx$gray, as.integer(pt["x"]), as.integer(pt["y"]), radius)
+    }, numeric(1))
+    names(inks) <- names(grid$y)
+    cls <- classify_bubble_row(inks, min_ink = 28, min_gap = 8, double_gap = 6)
+    if (!nzchar(cls$answer) || grepl("\\*$", cls$answer)) {
+      digits[col_i] <- "?"
+      notes <- c(notes, sprintf("zID digit %d %s", col_i, cls$note))
+    } else {
+      digits[col_i] <- cls$answer
+    }
+  }
+  zid <- paste0(cfg$id$prefix, paste(digits, collapse = ""))
+  list(zid = zid, uncertain = any(digits == "?"), note = paste(notes, collapse = " | "))
+}
+
+image_crop_norm <- function(img, x1, y1, x2, y2) {
+  info <- magick::image_info(img)
+  left <- max(1L, as.integer(x1 * info$width))
+  top <- max(1L, as.integer(y1 * info$height))
+  right <- min(info$width, as.integer(x2 * info$width))
+  bottom <- min(info$height, as.integer(y2 * info$height))
+  magick::image_crop(img, sprintf("%dx%d+%d+%d",
+                                  max(1L, right - left),
+                                  max(1L, bottom - top),
+                                  left, top))
+}
+
+image_crop_scan_uv <- function(img, map_xy, x1, y1, x2, y2) {
+  info <- magick::image_info(img)
+  pts <- rbind(map_xy(x1, y1), map_xy(x2, y1), map_xy(x1, y2), map_xy(x2, y2))
+  left <- max(1L, as.integer(min(pts[, "x"], na.rm = TRUE)))
+  top <- max(1L, as.integer(min(pts[, "y"], na.rm = TRUE)))
+  right <- min(info$width, as.integer(max(pts[, "x"], na.rm = TRUE)))
+  bottom <- min(info$height, as.integer(max(pts[, "y"], na.rm = TRUE)))
+  magick::image_crop(img, sprintf("%dx%d+%d+%d",
+                                  max(1L, right - left),
+                                  max(1L, bottom - top),
+                                  left, top))
+}
+
+compare_crop <- function(a, b) {
+  prep <- function(img) {
+    img <- magick::image_convert(img, colorspace = "gray")
+    img <- magick::image_resize(img, "120x45!")
+    arr <- magick::image_data(img, channels = "gray")
+    as.numeric(suppressWarnings(strtoi(arr[1, , ], base = 16L))) / 255
+  }
+  va <- prep(a)
+  vb <- prep(b)
+  mean(abs(va - vb), na.rm = TRUE)
+}
+
+read_version_cv <- function(img_path, cfg, template_dir) {
+  templates <- file.path(template_dir, sprintf("quizform_v%s.pdf", cfg$valid_versions))
+  names(templates) <- cfg$valid_versions
+  templates <- templates[file.exists(templates)]
+  if (length(templates) == 0) {
+    return(list(version = NA_character_, uncertain = TRUE,
+                note = "version templates unavailable"))
+  }
+
+  ctx <- build_map_xy(img_path)
+  # Tight crop around the printed version digit in the header.
+  crop_box <- c(x1 = 0.865, y1 = 0.024, x2 = 0.925, y2 = 0.055)
+  scan_crop <- image_crop_scan_uv(ctx$img, ctx$map_xy,
+                                  crop_box["x1"], crop_box["y1"],
+                                  crop_box["x2"], crop_box["y2"])
+  scores <- vapply(templates, function(pdf) {
+    tmpl <- magick::image_read_pdf(pdf, density = 150)[1]
+    tmpl_crop <- image_crop_norm(tmpl, crop_box["x1"], crop_box["y1"],
+                                 crop_box["x2"], crop_box["y2"])
+    compare_crop(scan_crop, tmpl_crop)
+  }, numeric(1))
+  ord <- order(scores)
+  best <- names(scores)[ord[1]]
+  gap <- if (length(ord) > 1) scores[ord[2]] - scores[ord[1]] else Inf
+  list(
+    version = best,
+    uncertain = is.finite(gap) && gap < 0.015,
+    note = sprintf("version template scores: %s",
+                   paste(sprintf("v%s=%.3f", names(scores), scores), collapse = ", "))
+  )
+}
+
+decode_qr_cv <- function(img_path) {
+  if (Sys.which("zbarimg") == "") {
+    return(list(payload = NA_character_, note = "zbarimg not installed"))
+  }
+  out <- tryCatch(
+    system2("zbarimg", c("--quiet", "--raw", img_path), stdout = TRUE, stderr = TRUE),
+    warning = function(w) structure(character(0), status = 1L),
+    error = function(e) structure(character(0), status = 1L)
+  )
+  status <- attr(out, "status") %||% 0L
+  if (!identical(status, 0L) || length(out) == 0 || !nzchar(out[1])) {
+    return(list(payload = NA_character_, note = "QR not decoded"))
+  }
+  list(payload = out[1], note = "")
+}
+
+parse_qr_payload <- function(payload) {
+  if (is.na(payload) || !nzchar(payload)) return(list())
+  parts <- strsplit(payload, "[;|]", perl = TRUE)[[1]]
+  kv <- parts[grepl("=", parts, fixed = TRUE)]
+  out <- list()
+  for (item in kv) {
+    split <- strsplit(item, "=", fixed = TRUE)[[1]]
+    out[[split[1]]] <- paste(split[-1], collapse = "=")
+  }
+  out
+}
+
+cv_parse_page <- function(img_path, page_num, cfg, layout) {
+  read <- read_answers_cv(img_path, cfg, layout)
+  layout_dir <- dirname(attr(layout, "path") %||% "output/layout.R")
+  form_pdf <- file.path(layout_dir, "quizform_v1.pdf")
+  zid <- read_zid_cv(img_path, cfg, form_pdf)
+  qr <- decode_qr_cv(img_path)
+  qr_fields <- parse_qr_payload(qr$payload)
+  version <- if (!is.null(qr_fields$version) && qr_fields$version %in% cfg$valid_versions) {
+    list(version = qr_fields$version, uncertain = FALSE, note = paste("QR:", qr$payload))
+  } else {
+    fallback <- read_version_cv(img_path, cfg, layout_dir)
+    fallback$note <- paste(c(qr$note, fallback$note), collapse = " | ")
+    fallback
+  }
+  answers <- read$answers
+  uncertain <- any(grepl("\\*$", unlist(answers), perl = TRUE))
+  notes <- read$notes
+  if (!isTRUE(read$marker_ok)) notes <- c(notes, "registration marker detection failed")
+  if (isTRUE(zid$uncertain) && nzchar(zid$note)) notes <- c(notes, zid$note)
+  if (isTRUE(version$uncertain)) notes <- c(notes, version$note)
+
+  list(
+    page         = page_num,
+    ok           = TRUE,
+    zid          = zid$zid,
+    name         = NA_character_,
+    exam_version = version$version,
+    answers      = answers,
+    confidence   = if (uncertain || isTRUE(zid$uncertain) || isTRUE(version$uncertain)) "medium" else "high",
+    notes        = paste(notes, collapse = " | "),
+    error        = NA_character_
+  )
+}
+
+#' Mark scanned forms using deterministic computer vision
+#'
+#' Reads calibrated answer bubbles directly from scan pixels. This currently
+#' records answer bubbles and flags the row for review because version and zID
+#' bubbles are not yet calibrated/read by the CV path.
+#'
+#' @param dir Folder created by [preprocess_scans()].
+#' @param config Path to the exam config YAML, or a loaded config list.
+#' @param layout Path to the calibrated layout file, or a loaded layout list.
+#' @param dry_run Process only the first 3 pending pages.
+#' @return Invisibly, the updated progress data frame.
+#' @export
+mark_scans_cv <- function(dir,
+                          config = default_config_path(),
+                          layout = "output/layout.R",
+                          dry_run = FALSE) {
+  if (!dir.exists(dir)) stop("Directory not found: ", dir, call. = FALSE)
+  cfg <- if (is.list(config)) config else load_exam_config(config)
+  layout <- if (is.list(layout)) layout else load_layout(layout)
+
+  csv_path <- file.path(dir, "progress.csv")
+  if (!file.exists(csv_path)) {
+    stop("progress.csv not found in ", dir,
+         " -- run `bubblequiz preprocess` first.", call. = FALSE)
+  }
+  marked_dir <- file.path(dir, "marked-cv")
+  dir.create(marked_dir, showWarnings = FALSE)
+
+  message("Loading progress CSV: ", csv_path)
+  progress <- readr::read_csv(csv_path, show_col_types = FALSE)
+  if (!("name" %in% names(progress))) progress$name <- NA_character_
+
+  to_process <- seq_len(nrow(progress))
+  if (isTRUE(dry_run)) {
+    message("-- dry run: processing the first 3 pages only --")
+    to_process <- utils::head(to_process, 3)
+  }
+
+  for (idx in to_process) {
+    page_num <- progress$page[idx]
+    img_path <- file.path(dir, progress$file[idx])
+    message(sprintf("  Page %d / %d  [%s] ...", page_num, nrow(progress), progress$file[idx]))
+
+    parsed <- tryCatch(
+      cv_parse_page(img_path, page_num, cfg, layout),
+      error = function(e) list(
+        page = page_num, ok = FALSE, zid = NA_character_, name = NA_character_,
+        exam_version = NA_character_, answers = NULL, confidence = NA_character_,
+        notes = "", error = conditionMessage(e)
+      )
+    )
+    progress <- update_progress_row(progress, idx, parsed, cfg, api_call_ok = NA)
+    progress$needs_review[idx] <- TRUE
+    if (isTRUE(parsed$ok)) {
+      ans_line <- paste(sprintf("Q%s=%s", names(parsed$answers),
+                                ifelse(nzchar(unlist(parsed$answers)),
+                                       unlist(parsed$answers), "<blank>")),
+                        collapse = "  ")
+      message("    ", ans_line)
+      message("    Notes: ", parsed$notes)
+    } else {
+      message("    CV error: ", parsed$error)
+    }
+    save_progress(progress, idx, csv_path)
+    tryCatch(
+      annotate_page(img_path, parsed, marked_dir, cfg, layout),
+      error = function(e) message("    [annotate] failed: ", conditionMessage(e))
+    )
+  }
+
+  cat("\n========================================\n")
+  cat(sprintf("Pages processed by CV: %d\n", length(to_process)))
+  cat("Version/zID CV reading is not implemented yet; rows are flagged for review.\n")
+  cat("========================================\n")
+  invisible(progress)
 }
 
 # ---------------------------------------------------------------------------
