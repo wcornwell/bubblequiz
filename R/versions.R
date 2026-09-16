@@ -81,9 +81,7 @@ process_version <- function(lines, perm, version_label, opts_lower) {
   inv <- order(perm)
   n   <- length(opts_lower)
   cls <- paste0("[", paste(c(opts_lower, toupper(opts_lower)), collapse = ""), "]")
-  out <- lines
-
-  out[1] <- paste0(out[1], "  ---  **Version ", version_label, "**")
+  out <- c(paste0("# Version ", version_label), "", lines)
 
   starts_with <- function(line, letter) grepl(paste0("^", letter, "\\.\\s"), line)
 

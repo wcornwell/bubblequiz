@@ -76,7 +76,7 @@ default_makefile <- function() {
     "CONFIG ?= exam.yml",
     "QUESTIONS ?= questions.md",
     "",
-    ".PHONY: check versions sheets calibrate paper build",
+    ".PHONY: check versions sheets calibrate paper forms build",
     "",
     "check:",
     "\tbubblequiz check --config $(CONFIG)",
@@ -92,6 +92,9 @@ default_makefile <- function() {
     "",
     "paper:",
     "\tbubblequiz paper --config $(CONFIG) --outdir $(OUTDIR)",
+    "",
+    "forms:",
+    "\tbubblequiz forms --config $(CONFIG) --outdir $(OUTDIR)",
     "",
     "build:",
     "\tbubblequiz build --config $(CONFIG) --questions $(QUESTIONS) --outdir $(OUTDIR)"

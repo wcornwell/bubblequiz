@@ -20,7 +20,8 @@ Commands:
   sheets                    exam.yml     -> output/bubblesheet_v*.pdf
   calibrate                 rendered sheet -> output/layout.R + preview JPEG
   paper                     output/questions_v*.md -> printable PDFs
-  build                     versions + sheets + calibrate + paper
+  forms                     questions + bubbles inline -> quizform_v*.pdf
+  build                     versions + inline forms + calibrate
   preprocess <scan.pdf>     scanned PDF  -> page images + progress.csv
   mark --dir <folder>       grade scanned pages with the Claude vision API
   score --dir <folder>      progress.csv + answer_key.csv -> results.csv
@@ -131,12 +132,14 @@ bq_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
 
     "paper" = render_papers(config, outdir),
 
+    "forms" = make_quiz_forms(config, outdir,
+                              render = !isTRUE(o[["no-render"]])),
+
     "build" = {
       generate_versions(config, questions, outdir)
-      make_bubblesheet(config, outdir)
-      calibrate_coords(config, file.path(outdir, "bubblesheet_v1.pdf"), layout,
+      make_quiz_forms(config, outdir)
+      calibrate_coords(config, file.path(outdir, "quizform_v1.pdf"), layout,
                        file.path(outdir, "layout_preview.jpeg"))
-      render_papers(config, outdir)
     },
 
     "preprocess" = {
