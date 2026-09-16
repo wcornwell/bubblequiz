@@ -7,4 +7,5 @@
 ..Rcheck/
 output/
 responses/
+example/
 *.tar.gz

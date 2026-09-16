@@ -44,7 +44,15 @@ load_layout <- function(path = "output/layout.R") {
 # ---------------------------------------------------------------------------
 call_claude <- function(image_path, model, api_key, prompt) {
   img_b64  <- base64enc::base64encode(image_path)
-  img_type <- "image/jpeg"
+  ext <- tolower(tools::file_ext(image_path))
+  img_type <- switch(ext,
+    "png" = "image/png",
+    "jpg" = "image/jpeg",
+    "jpeg" = "image/jpeg",
+    "webp" = "image/webp",
+    "gif" = "image/gif",
+    "image/jpeg"
+  )
 
   body <- list(
     model      = model,

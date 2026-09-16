@@ -7,12 +7,14 @@
 #' @param pdf Path to the scanned PDF (one page per student).
 #' @param config Path to the exam config YAML, or a loaded config list.
 #' @param dpi Resolution for the extracted page images.
+#' @param format Image format for extracted pages, usually `"png"` or `"jpeg"`.
 #' @param force Re-extract even if the output folder already exists.
 #' @return Invisibly, the output directory.
 #' @export
 preprocess_scans <- function(pdf,
                              config = default_config_path(),
                              dpi    = 150,
+                             format = "png",
                              force  = FALSE) {
   cfg <- if (is.list(config)) config else load_exam_config(config)
 
@@ -29,9 +31,11 @@ preprocess_scans <- function(pdf,
 
   message("Converting PDF to images (DPI=", dpi, "): ", pdf_path)
   n_pages   <- pdftools::pdf_length(pdf_path)
+  format <- tolower(format)
+  ext <- if (format %in% c("jpg", "jpeg")) "jpeg" else format
   img_paths <- pdftools::pdf_convert(
-    pdf_path, format = "jpeg", dpi = dpi,
-    filenames = file.path(pages_dir, sprintf("page_%04d.jpeg", seq_len(n_pages)))
+    pdf_path, format = format, dpi = dpi,
+    filenames = file.path(pages_dir, sprintf("page_%04d.%s", seq_len(n_pages), ext))
   )
 
   q_cols <- stats::setNames(
