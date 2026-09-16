@@ -502,7 +502,21 @@ classify_bubble_row <- function(inks,
 
 read_answers_cv <- function(img_path, cfg, layout) {
   ctx <- build_map_xy(img_path)
-  radius <- max(4L, as.integer(ctx$w * 0.0048))
+  radius <- max(5L, as.integer(ctx$w * 0.0062))
+  search_offsets <- seq(-18L, 18L, by = 6L)
+  score_near <- function(x_pos, y_pos) {
+    pt <- ctx$map_xy(x_pos, y_pos)
+    vals <- c()
+    for (dx in search_offsets) {
+      for (dy in search_offsets) {
+        vals <- c(vals, ink_score(ctx$gray,
+                                  as.integer(pt["x"] + dx),
+                                  as.integer(pt["y"] + dy),
+                                  radius))
+      }
+    }
+    max(vals, na.rm = TRUE)
+  }
   answers <- stats::setNames(vector("list", length(cfg$questions)),
                              as.character(cfg$questions))
   notes <- character(0)
@@ -521,8 +535,7 @@ read_answers_cv <- function(img_path, cfg, layout) {
     inks <- vapply(cfg$options, function(letter) {
       x_pos <- layout$ANSWER_X[[col]][letter]
       if (is.null(x_pos) || is.na(x_pos)) return(NA_real_)
-      pt <- ctx$map_xy(x_pos, y_pos)
-      ink_score(ctx$gray, as.integer(pt["x"]), as.integer(pt["y"]), radius)
+      score_near(x_pos, y_pos)
     }, numeric(1))
     names(inks) <- cfg$options
     inks_by_q[[q_chr]] <- inks
@@ -789,7 +802,7 @@ mark_scans_cv <- function(dir,
 
   cat("\n========================================\n")
   cat(sprintf("Pages processed by CV: %d\n", length(to_process)))
-  cat("Version/zID CV reading is not implemented yet; rows are flagged for review.\n")
+  cat("Rows needing QR/version/zID/ambiguous-answer review are flagged in progress.csv.\n")
   cat("========================================\n")
   invisible(progress)
 }
