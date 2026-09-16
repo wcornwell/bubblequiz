@@ -1,0 +1,110 @@
+%%% bubblequiz — static half of the bubble sheet.
+%%%
+%%% R/make_bubblesheet.R writes output/bubblesheet_v<N>.tex, which \def's the
+%%% macros used below, \input's this file, then emits the section bars and
+%%% answer-row tabulars derived from exam.yml.
+%%%
+%%% Macros expected from the generated file:
+%%%   \examversion \examtitle \examdate \examsubtitle \examdurationmarks
+%%%   \examinstructions \idlabel \idprefix \idexample \idlastcol \idblanks
+%%%
+%%% DO NOT change the bubble geometry (8pt circles, 1.2pt lines, 1.8cm column
+%%% gap, 4pt row skip) or the corner registration squares without re-running
+%%% `make calibrate` — the marker locates bubbles from these positions.
+
+\documentclass[11pt, a4paper]{article}
+\usepackage[a4paper, left=1.4cm, right=1.4cm, top=0.9cm, bottom=0.9cm]{geometry}
+\usepackage{fontspec}
+\setmainfont{Helvetica Neue}
+\usepackage{tikz}
+\usepackage{xcolor}
+\definecolor{shadedbg}{gray}{0.88}
+\definecolor{versionbg}{gray}{0.15}
+
+\providecommand{\examversion}{?}
+
+\pagestyle{empty}
+\setlength{\parskip}{0pt}
+\setlength{\parindent}{0pt}
+
+%── Answer bubble: 7 mm circle with letter centred ───────────────────────────
+\newcommand{\bub}[1]{%
+  \begin{tikzpicture}[baseline=-0.6ex]
+    \draw[line width=1.2pt](0,0) circle (8pt);
+    \node[font=\fontsize{8.5}{8.5}\selectfont\bfseries] at (0,0){#1};
+  \end{tikzpicture}%
+  \hspace{4pt}%
+}
+
+%── One question row: Q<n>  ○A ○B ○C ○D ○E ──────────────────────────────────
+%   #1 = question number, #2 = option letters (emitted by make_bubblesheet.R)
+\newcommand{\qrow}[2]{%
+  \makebox[2.4em][l]{\textbf{\small Q#1}}%
+  #2%
+}
+
+%── An essay placeholder row: Q<n>  Essay <marks> marks ─────────────────────
+\newcommand{\erow}[2]{%
+  \makebox[2.4em][l]{\textbf{\small Q#1}} Essay #2 marks%
+}
+
+%── Shaded section heading bar ───────────────────────────────────────────────
+\newcommand{\sectionbar}[2]{%
+  \vspace{4pt}%
+  \noindent\colorbox{shadedbg}{\parbox{\dimexpr\linewidth-2\fboxsep}{%
+    \vspace{1pt}\textbf{#1}\hfill{\small\textit{#2}}\vspace{1pt}%
+  }}\par\vspace{3pt}%
+}
+
+\begin{document}
+
+%── Registration marks: solid 8 mm squares in each corner (OMR anchors) ──────
+%   Squares preferred over circles: sharp corners give precise skew correction.
+\begin{tikzpicture}[remember picture, overlay]
+  \fill[black] ([xshift= 3mm, yshift= -3mm]current page.north west) rectangle ++( 5mm, -5mm);
+  \fill[black] ([xshift=-8mm, yshift= -3mm]current page.north east) rectangle ++( 5mm, -5mm);
+  \fill[black] ([xshift= 3mm, yshift=  3mm]current page.south west) rectangle ++( 5mm,  5mm);
+  \fill[black] ([xshift=-8mm, yshift=  3mm]current page.south east) rectangle ++( 5mm,  5mm);
+\end{tikzpicture}
+
+%── Title block ───────────────────────────────────────────────────────────────
+\noindent{\LARGE\bfseries \examtitle}%
+\hfill\colorbox{versionbg}{\textcolor{white}{\Large\bfseries\quad Version \examversion\quad}}
+\hspace{4pt}{\large\bfseries \examdate}\\[2pt]
+{\large \examsubtitle}%
+\hfill{\normalsize \examdurationmarks}
+
+\vspace{3pt}
+\noindent\rule{\linewidth}{1.4pt}
+\vspace{2pt}
+
+%── Instructions ──────────────────────────────────────────────────────────────
+{\small \examinstructions}
+
+\vspace{5pt}
+
+%── Student details (left) + ID digit grid (right), side by side ─────────────
+\noindent
+\begin{minipage}[t]{0.40\linewidth}
+  \textbf{Name}\\[4pt]
+  \underline{\hspace{\linewidth}}\\[12pt]
+  \textbf{\idlabel} \quad {\small\textit{e.g.\ \idexample}}\\[5pt]
+  \idprefix\,\idblanks\\[8pt]
+  {\small Also {\bf fill your \idlabel\ in digit bubbles}, this enables automatic read  $\rightarrow$} \\[8pt]
+  {\small {\bf Tick to confirm} the version number of the test (top right corner) is the same as your answer booklet}  \bub{ }\\[8pt]
+\end{minipage}%
+\hfill
+\begin{minipage}[t]{0.56\linewidth}
+  \textbf{\small \idlabel\ bubbles} {\small — one bubble per column, left to right:}\\[3pt]
+  \begin{tikzpicture}[x=1.08cm, y=-0.70cm]
+    \foreach \col in {0,...,\idlastcol} {
+      \foreach \d in {0,...,9} {
+        \draw[line width=0.9pt](\col, \d) circle (0.24cm);
+        \node[font=\fontsize{7.5}{7.5}\selectfont] at (\col, \d) {\d};
+      }
+    }
+  \end{tikzpicture}
+\end{minipage}
+
+\vspace{4pt}
+\noindent\rule{\linewidth}{1.4pt}%
