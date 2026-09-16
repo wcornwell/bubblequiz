@@ -213,19 +213,22 @@ make_bubblesheet <- function(config = default_config_path(),
 #' @return Invisibly, the PDF path.
 #' @export
 render_xelatex <- function(tex_path, outdir = dirname(tex_path)) {
+  tex_path <- normalizePath(tex_path, mustWork = TRUE)
+  dir.create(outdir, showWarnings = FALSE, recursive = TRUE)
+  outdir <- normalizePath(outdir, mustWork = TRUE)
   job <- tools::file_path_sans_ext(basename(tex_path))
   args <- c("-interaction=nonstopmode",
             paste0("-output-directory=", outdir),
             paste0("-jobname=", job),
             basename(tex_path))
-  wd <- setwd(dirname(normalizePath(tex_path)))
+  wd <- setwd(dirname(tex_path))
   on.exit(setwd(wd), add = TRUE)
 
   for (pass in 1:2) {
     status <- system2("xelatex", args, stdout = FALSE, stderr = FALSE)
   }
   pdf_path <- file.path(outdir, paste0(job, ".pdf"))
-  if (!file.exists(basename(pdf_path)) && !file.exists(pdf_path)) {
+  if (!file.exists(pdf_path)) {
     log_path <- file.path(outdir, paste0(job, ".log"))
     if (file.exists(log_path)) writeLines(utils::tail(readLines(log_path, warn = FALSE), 25))
     stop("xelatex failed for ", tex_path, call. = FALSE)
