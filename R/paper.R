@@ -150,7 +150,7 @@ latex_inline_quiz <- function(cfg, blocks, version) {
     "\\pagestyle{empty}",
     "\\setlength{\\parindent}{0pt}",
     "\\setlength{\\parskip}{2pt}",
-    "\\newcommand{\\bub}[1]{\\begin{tikzpicture}[baseline=-0.6ex]\\draw[line width=1.2pt](0,0) circle (8pt);\\node[font=\\fontsize{8.5}{8.5}\\selectfont\\bfseries] at (0,0){#1};\\end{tikzpicture}\\hspace{4pt}}",
+    "\\newcommand{\\bub}[1]{\\begin{tikzpicture}[baseline=-0.6ex]\\draw[line width=1.2pt](0,0) circle (8pt);\\node[font=\\fontsize{7.2}{7.2}\\selectfont\\bfseries] at (0,0){#1};\\end{tikzpicture}\\hspace{4pt}}",
     "\\newcommand{\\questionblock}[2]{\\vspace{4pt}\\textbf{Q#1.} #2\\par}",
     "\\newcommand{\\answerline}[2]{\\textbf{Answer Q#1}\\quad #2\\par}",
     "\\begin{document}",
