@@ -120,9 +120,6 @@ latex_inline_quiz <- function(cfg, blocks, version) {
   bubble_row <- paste0(sprintf("\\bub{%s}", cfg$options), collapse = "")
   qr_payload <- sprintf("bubblequiz|course=%s|version=%s|questions=%s",
                         cfg$course, version, paste(cfg$questions, collapse = ","))
-  id_blanks <- paste0(rep("\\underline{\\hspace{1.6em}}", cfg$id$digits), collapse = "\\,")
-  id_example <- paste0(cfg$id$prefix,
-    substr(paste(rep("1234567890", 2), collapse = ""), 1, cfg$id$digits))
 
   question_tex <- unlist(lapply(blocks, function(q) {
     opts <- q$options[tolower(cfg$options)]
@@ -178,14 +175,13 @@ latex_inline_quiz <- function(cfg, blocks, version) {
     "  \\fill[black] ([xshift= 3mm, yshift=  3mm]current page.south west) rectangle ++( 5mm,  5mm);",
     "  \\fill[black] ([xshift=-8mm, yshift=  3mm]current page.south east) rectangle ++( 5mm,  5mm);",
     # Page number on every page, plus a name line on the later pages only.
-    # Page 1 already carries the full name/zID header block, so repeating it
+    # Page 1 already carries the full name/zID bubble header block, so repeating it
     # there would give the student two name slots on the same page; pages after
     # the first have no header, and need somewhere to write a name so a
     # separated sheet can still be attributed.
     "  \\node[anchor=south west, inner sep=0pt, font=\\footnotesize] at ([xshift=11mm, yshift=4mm]current page.south west) {\\ifnum\\value{page}>1 \\textbf{Name}~\\underline{\\hspace{55mm}}\\quad\\fi Page \\thepage\\ of \\pageref{LastPage}};",
-    # Repeat the version QR in the bottom-right of every page, clear of the
-    # corner squares. Page 1 carries the header QR as well; the redundancy means
-    # a torn or over-cropped page can still be matched to its version.
+    # Version/page QR in the bottom-right of every page, clear of the corner
+    # squares, so a scanned stack can be matched without scan-order assumptions.
     "  \\node[anchor=south east, inner sep=0pt] at ([xshift=-12mm, yshift=3mm]current page.south east) {\\bqpageqr};",
     "\\end{tikzpicture}}",
     "\\begin{document}",
@@ -194,22 +190,14 @@ latex_inline_quiz <- function(cfg, blocks, version) {
     sprintf("{\\normalsize %s}", tex_escape(cfg$subtitle)),
     "\\end{minipage}\\hfill",
     "\\begin{minipage}[t]{0.28\\linewidth}\\raggedleft",
-    "\\begin{minipage}[t]{0.54\\linewidth}\\raggedleft",
     sprintf("\\colorbox{black}{\\textcolor{white}{\\large\\bfseries\\quad Version %s\\quad}}\\\\[2pt]",
             tex_escape(version)),
     sprintf("{\\footnotesize %s}", tex_escape(cfg$date)),
-    "\\end{minipage}\\hspace{0.7em}",
-    "\\begin{minipage}[t]{0.31\\linewidth}",
-    sprintf("\\qrcode[height=1.05cm]{%s}", tex_escape(qr_payload)),
-    "\\end{minipage}",
     "\\end{minipage}\\\\[2pt]",
     "\\rule{\\linewidth}{1.2pt}",
     "\\begin{minipage}[t]{0.40\\linewidth}",
     "\\vspace{2pt}",
-    "\\textbf{Name}\\quad\\underline{\\hspace{0.74\\linewidth}}\\\\[8pt]",
-    sprintf("\\textbf{%s}\\quad {\\small e.g. %s}\\\\[3pt]",
-            tex_escape(cfg$id$label), tex_escape(id_example)),
-    sprintf("%s\\,%s", tex_escape(cfg$id$prefix), id_blanks),
+    "\\textbf{Name}\\quad\\underline{\\hspace{0.74\\linewidth}}",
     "\\end{minipage}\\hfill",
     "\\begin{minipage}[t]{0.56\\linewidth}",
     "\\vspace{2pt}",

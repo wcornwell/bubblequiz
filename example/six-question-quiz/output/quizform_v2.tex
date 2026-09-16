@@ -16,15 +16,15 @@
 \newcommand{\questionblock}[2]{\vspace{4pt}\textbf{Q#1.} #2\par}
 \newcommand{\answerline}[2]{\textbf{Answer Q#1}\quad #2\par}
 \newcommand{\bqpagepayload}{bubblequiz|course=BES2041|version=2|questions=1,2,3,4,5,6|page=\the\value{page}|pages=\getpagerefnumber{LastPage}}
-\newcommand{\bqpageqr}{\expanded{\noexpand\qrcode[height=0.95cm]{\bqpagepayload}}}
+\newcommand{\bqpageqr}{\expanded{\noexpand\qrcode[height=1.3cm]{\bqpagepayload}}}
 \AddToShipoutPictureBG{%
 \begin{tikzpicture}[remember picture, overlay]
   \fill[black] ([xshift= 3mm, yshift= -3mm]current page.north west) rectangle ++( 5mm, -5mm);
   \fill[black] ([xshift=-8mm, yshift= -3mm]current page.north east) rectangle ++( 5mm, -5mm);
   \fill[black] ([xshift= 3mm, yshift=  3mm]current page.south west) rectangle ++( 5mm,  5mm);
   \fill[black] ([xshift=-8mm, yshift=  3mm]current page.south east) rectangle ++( 5mm,  5mm);
-  \node[anchor=south west, inner sep=0pt, font=\footnotesize] at ([xshift=11mm, yshift=4mm]current page.south west) {\textbf{Name}~\underline{\hspace{55mm}}\quad Page \thepage\ of \pageref{LastPage}};
-  \node[anchor=south east, inner sep=0pt] at ([xshift=-11mm, yshift=3mm]current page.south east) {\bqpageqr};
+  \node[anchor=south west, inner sep=0pt, font=\footnotesize] at ([xshift=11mm, yshift=4mm]current page.south west) {\ifnum\value{page}>1 \textbf{Name}~\underline{\hspace{55mm}}\quad\fi Page \thepage\ of \pageref{LastPage}};
+  \node[anchor=south east, inner sep=0pt] at ([xshift=-12mm, yshift=3mm]current page.south east) {\bqpageqr};
 \end{tikzpicture}}
 \begin{document}
 \begin{minipage}[t]{0.70\linewidth}
@@ -32,20 +32,13 @@
 {\normalsize Multiple Choice Quiz}
 \end{minipage}\hfill
 \begin{minipage}[t]{0.28\linewidth}\raggedleft
-\begin{minipage}[t]{0.54\linewidth}\raggedleft
 \colorbox{black}{\textcolor{white}{\large\bfseries\quad Version 2\quad}}\\[2pt]
 {\footnotesize 16 September 2026}
-\end{minipage}\hspace{0.7em}
-\begin{minipage}[t]{0.31\linewidth}
-\qrcode[height=1.05cm]{bubblequiz|course=BES2041|version=2|questions=1,2,3,4,5,6}
-\end{minipage}
 \end{minipage}\\[2pt]
 \rule{\linewidth}{1.2pt}
 \begin{minipage}[t]{0.40\linewidth}
 \vspace{2pt}
-\textbf{Name}\quad\underline{\hspace{0.74\linewidth}}\\[8pt]
-\textbf{zID}\quad {\small e.g. z1234567}\\[3pt]
-z\,\underline{\hspace{1.6em}}\,\underline{\hspace{1.6em}}\,\underline{\hspace{1.6em}}\,\underline{\hspace{1.6em}}\,\underline{\hspace{1.6em}}\,\underline{\hspace{1.6em}}\,\underline{\hspace{1.6em}}
+\textbf{Name}\quad\underline{\hspace{0.74\linewidth}}
 \end{minipage}\hfill
 \begin{minipage}[t]{0.56\linewidth}
 \vspace{2pt}
