@@ -245,19 +245,44 @@ Then run:
 
 ```r
 preprocess_scans("scans.pdf", "exam.yml", force = TRUE)
+check_scan_sequence("scans")
 mark_scans_cv("scans", config = "exam.yml", layout = "output/layout.R")
+aggregate_sheets("scans", config = "exam.yml")
 score_results("scans", key = "output/answer_key.csv", config = "exam.yml")
 ```
 
 Outputs:
 
 ```text
-scans/progress.csv
-scans/marked-cv/
-scans/results.csv
+scans/scan_sequence.csv   one row per page: version, page number, sheet
+scans/progress.csv        one row per page, as read by the marker
+scans/marked-cv/          each page with the recorded answers drawn on
+scans/sheets.csv          one row per student, pages joined
+scans/results.csv         scores
 ```
 
-Rows needing manual review are flagged in `progress.csv`.
+Rows needing manual review are flagged in `progress.csv` and `sheets.csv`.
+
+For a single-page form, `check_scan_sequence()` and `aggregate_sheets()` are
+harmless no-ops: every page is its own sheet and `sheets.csv` matches
+`progress.csv`. For a multi-page form they are required, because the marker
+reads one page at a time and only the front of a sheet carries a zID grid.
+
+### How A Multi-Page Form Is Marked
+
+```text
+calibrate_coords()     reads every page of the blank form and records which
+                       page each question's bubble row is printed on
+check_scan_sequence()  reads the per-page QR and groups the stack into sheets
+mark_scans_cv()        reads only the questions printed on each page, and the
+                       zID from the front page only
+aggregate_sheets()     joins the pages of each sheet into one student record
+score_results()        scores sheets.csv when present, otherwise progress.csv
+```
+
+A page that cannot be attributed to a complete sheet is excluded from
+`sheets.csv` with a warning rather than being scored as a whole paper, and a
+sheet that is short a page is flagged for review.
 
 ## Version Tracking
 

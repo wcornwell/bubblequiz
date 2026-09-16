@@ -35,47 +35,82 @@ calibrate_coords <- function(config  = default_config_path(),
   n_cols <- cfg$n_cols
 
   # --- 1. Text with positions, normalised to 0-1 ---------------------------
+  # Every page is read, not just the first: an inline quiz form runs to as many
+  # pages as the questions need, and the bubble rows on page 2 are as real as
+  # those on page 1. Rows are collected in page order and each keeps the page it
+  # was found on, so the marker can look for a question on the right sheet side.
   message("Reading PDF text data from: ", pdf)
-  txt <- pdftools::pdf_data(pdf, font_info = TRUE)[[1]]
-  txt$xc <- (txt$x + txt$width  / 2) / PAGE_W
-  txt$yc <- (txt$y + txt$height / 2) / PAGE_H
+  all_pages <- pdftools::pdf_data(pdf, font_info = TRUE)
+  message("Pages in form: ", length(all_pages))
 
-  # --- 2. Keep the option letters, at the small bubble font size -----------
-  bubble_letters <- txt[txt$text %in% cfg$options, , drop = FALSE]
-  if (nrow(bubble_letters) == 0) {
+  page_rows <- list()
+  x_centers <- NULL
+  n_x <- NA_integer_
+
+  for (pg in seq_along(all_pages)) {
+    txt <- all_pages[[pg]]
+    if (nrow(txt) == 0) next
+    txt$xc <- (txt$x + txt$width  / 2) / PAGE_W
+    txt$yc <- (txt$y + txt$height / 2) / PAGE_H
+
+    # --- 2. Keep the option letters, at the small bubble font size ---------
+    bubble_letters <- txt[txt$text %in% cfg$options, , drop = FALSE]
+    if (nrow(bubble_letters) == 0) next
+
+    # The ID-grid digits and section headings also use small fonts, so filter
+    # relative to the median rather than against an absolute point size.
+    med_size <- stats::median(bubble_letters$font_size, na.rm = TRUE)
+    bubbles  <- bubble_letters[bubble_letters$font_size <= med_size * 1.2, , drop = FALSE]
+    if (nrow(bubbles) == 0) next
+
+    # --- 3. Cluster x positions into n_opt x n_cols groups ----------------
+    x_sorted  <- sort(unique(round(bubbles$xc, 4)))
+    x_group   <- cumsum(c(TRUE, diff(x_sorted) > 0.015))
+    pg_x      <- tapply(x_sorted, x_group, mean)
+
+    # --- 4. Cluster y positions into rows ---------------------------------
+    y_sorted <- sort(unique(round(bubbles$yc, 4)))
+    y_grp    <- cumsum(c(TRUE, diff(y_sorted) > 0.008))
+
+    b_y   <- round(bubbles$yc, 4)
+    b_gid <- y_grp[match(b_y, y_sorted)]
+    agg   <- stats::aggregate(list(n = seq_along(b_gid)),
+                              by = list(gid = b_gid), FUN = length)
+    y_mean <- stats::aggregate(list(y_mean = bubbles$yc), by = list(gid = b_gid), FUN = mean)
+    rows_pg <- merge(agg[, c("gid", "n")], y_mean, by = "gid")
+    # A real answer row carries most of a full set of option letters.
+    rows_pg <- rows_pg[rows_pg$n >= max(2L, n_opt - 1L), , drop = FALSE]
+    rows_pg <- rows_pg[order(rows_pg$y_mean), , drop = FALSE]
+    if (nrow(rows_pg) == 0) next
+
+    rows_pg$page <- pg
+    page_rows[[length(page_rows) + 1L]] <- rows_pg
+
+    message(sprintf("  page %d: %.1f pt option letters | %d bubble row(s), %d x-group(s)",
+                    pg, med_size, nrow(rows_pg), length(pg_x)))
+
+    # The bubble columns are printed at the same x on every page. Take them
+    # from the first page that has answer rows and require the rest to agree,
+    # so a stray match on a later page cannot quietly shift the coordinates.
+    if (is.null(x_centers)) {
+      x_centers <- pg_x
+      n_x <- length(pg_x)
+    } else if (length(pg_x) != n_x || max(abs(as.numeric(pg_x) - as.numeric(x_centers))) > 0.01) {
+      stop(sprintf("Bubble columns on page %d do not line up with page 1. Rebuild the form before calibrating.", pg),
+           call. = FALSE)
+    }
+  }
+
+  if (length(page_rows) == 0) {
     stop("No option letters (", paste(cfg$options, collapse = ""),
          ") found in the PDF text layer.", call. = FALSE)
   }
 
-  # The ID-grid digits and section headings also use small fonts, so filter
-  # relative to the median rather than against an absolute point size.
-  med_size <- stats::median(bubble_letters$font_size, na.rm = TRUE)
-  bubbles  <- bubble_letters[bubble_letters$font_size <= med_size * 1.2, , drop = FALSE]
-  message(sprintf("Median option-letter font size: %.1f pt | kept %d letters",
-                  med_size, nrow(bubbles)))
-
-  # --- 3. Cluster x positions into n_opt x n_cols groups -------------------
-  x_sorted  <- sort(unique(round(bubbles$xc, 4)))
-  x_group   <- cumsum(c(TRUE, diff(x_sorted) > 0.015))
-  x_centers <- tapply(x_sorted, x_group, mean)
-  n_x       <- length(x_centers)
-
-  # --- 4. Cluster y positions into rows ------------------------------------
-  y_sorted <- sort(unique(round(bubbles$yc, 4)))
-  y_grp    <- cumsum(c(TRUE, diff(y_sorted) > 0.008))
-
-  b_y   <- round(bubbles$yc, 4)
-  b_gid <- y_grp[match(b_y, y_sorted)]
-  agg   <- stats::aggregate(list(n = seq_along(b_gid), y_mean = bubbles$yc),
-                            by = list(gid = b_gid), FUN = length)
-  y_mean <- stats::aggregate(list(y_mean = bubbles$yc), by = list(gid = b_gid), FUN = mean)
-  rows_found <- merge(agg[, c("gid", "n")], y_mean, by = "gid")
-  # A real answer row carries most of a full set of option letters.
-  rows_found <- rows_found[rows_found$n >= max(2L, n_opt - 1L), , drop = FALSE]
-  rows_found <- rows_found[order(rows_found$y_mean), , drop = FALSE]
+  rows_found <- do.call(rbind, page_rows)
   n_rows <- nrow(rows_found)
 
-  message(sprintf("Detected %d x-group(s) and %d bubble row(s).", n_x, n_rows))
+  message(sprintf("Detected %d x-group(s) and %d bubble row(s) across %d page(s).",
+                  n_x, n_rows, length(page_rows)))
   validate_layout_match(cfg, n_rows, n_x)
 
   # --- 5. Build ANSWER_X / QUESTION_Y --------------------------------------
@@ -88,12 +123,17 @@ calibrate_coords <- function(config  = default_config_path(),
   )
 
   question_y <- numeric(0)
+  question_page <- integer(0)
   for (i in seq_len(n_rows)) {
     y_val <- round(rows_found$y_mean[i], 4)
+    pg_val <- as.integer(rows_found$page[i])
     r <- cfg$bubble_rows[[i]]
     for (col in names(r)) {
       q <- r[[col]]
-      if (q %in% cfg$questions) question_y[as.character(q)] <- y_val
+      if (q %in% cfg$questions) {
+        question_y[as.character(q)] <- y_val
+        question_page[as.character(q)] <- pg_val
+      }
     }
   }
 
@@ -126,8 +166,15 @@ calibrate_coords <- function(config  = default_config_path(),
     ")",
     "",
     "# y position (normalised 0-1) of each question's bubble row",
-    "# Questions sharing a row share a y value.",
-    paste0("QUESTION_Y <- c(\n  ", paste(qy_lines, collapse = ",\n  "), "\n)")
+    "# Questions sharing a row share a y value. y is measured within the page the",
+    "# row is printed on, so it must be read together with QUESTION_PAGE.",
+    paste0("QUESTION_Y <- c(\n  ", paste(qy_lines, collapse = ",\n  "), "\n)"),
+    "",
+    "# Which page of the form each question's bubble row is printed on.",
+    paste0("QUESTION_PAGE <- c(\n  ",
+           paste(sprintf('"%s"=%d', names(question_page), as.integer(question_page)),
+                 collapse = ","),
+           "\n)")
   )
   writeLines(lines, out)
   message("Wrote: ", out)

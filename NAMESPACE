@@ -1,3 +1,4 @@
+export(aggregate_sheets)
 export(bq_cli)
 export(bq_file)
 export(calibrate_coords)

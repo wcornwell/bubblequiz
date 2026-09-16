@@ -14,12 +14,32 @@ decode_qr_all <- function(img_path) {
     stop("zbarimg was not found on PATH. Install zbar to validate a scan stack.",
          call. = FALSE)
   }
-  out <- suppressWarnings(
-    system2("zbarimg", c("--quiet", "--raw", shQuote(img_path)),
-            stdout = TRUE, stderr = FALSE)
-  )
-  out <- trimws(out[nzchar(trimws(out))])
-  out[grepl("^bubblequiz", out)]
+  run <- function(path) {
+    out <- suppressWarnings(
+      system2("zbarimg", c("--quiet", "--raw", shQuote(path)),
+              stdout = TRUE, stderr = FALSE)
+    )
+    out <- trimws(out[nzchar(trimws(out))])
+    out[grepl("^bubblequiz", out)]
+  }
+
+  found <- run(img_path)
+  if (length(found) > 0) return(found)
+
+  # A QR that is small relative to the scan resolution can fall below the
+  # decoder's threshold. Retry once on an upscaled, sharpened copy before
+  # reporting the page as unreadable.
+  tmp <- tempfile(fileext = ".png")
+  on.exit(unlink(tmp), add = TRUE)
+  ok <- tryCatch({
+    img <- magick::image_read(img_path)
+    img <- magick::image_resize(img, geometry = "200%")
+    img <- magick::image_convert(magick::image_contrast(img), colorspace = "gray")
+    magick::image_write(img, tmp, format = "png")
+    TRUE
+  }, error = function(e) FALSE)
+  if (!ok) return(character(0))
+  run(tmp)
 }
 
 # Reduce the payloads found on one page to a single reading. Pages carry more

@@ -36,7 +36,15 @@ load_layout <- function(path = "output/layout.R") {
   if (length(missing) > 0) {
     stop("Layout file is missing: ", paste(missing, collapse = ", "), call. = FALSE)
   }
-  out <- list(ANSWER_X = e$ANSWER_X, QUESTION_COL = e$QUESTION_COL, QUESTION_Y = e$QUESTION_Y)
+  # QUESTION_PAGE arrived with multi-page forms. A layout calibrated before
+  # that is a single-page form, so treat every question as page 1.
+  question_page <- if ("QUESTION_PAGE" %in% ls(e)) {
+    e$QUESTION_PAGE
+  } else {
+    stats::setNames(rep(1L, length(e$QUESTION_Y)), names(e$QUESTION_Y))
+  }
+  out <- list(ANSWER_X = e$ANSWER_X, QUESTION_COL = e$QUESTION_COL,
+              QUESTION_Y = e$QUESTION_Y, QUESTION_PAGE = question_page)
   attr(out, "path") <- normalizePath(path, mustWork = TRUE)
   out
 }
@@ -500,7 +508,20 @@ classify_bubble_row <- function(inks,
   list(answer = choice, uncertain = FALSE, note = "")
 }
 
-read_answers_cv <- function(img_path, cfg, layout) {
+# questions_on_page: which of the configured questions have their bubble row on
+# the given page of the form. page_no = NA means "the whole form is one page",
+# which is what a single-page quiz and any pre-multi-page layout expect.
+questions_on_page <- function(cfg, layout, page_no) {
+  if (is.na(page_no)) return(cfg$questions)
+  qp <- layout$QUESTION_PAGE
+  keep <- vapply(cfg$questions, function(q) {
+    pg <- qp[as.character(q)]
+    !is.na(pg) && as.integer(pg) == as.integer(page_no)
+  }, logical(1))
+  cfg$questions[keep]
+}
+
+read_answers_cv <- function(img_path, cfg, layout, page_no = NA_integer_) {
   ctx <- build_map_xy(img_path)
   radius <- max(5L, as.integer(ctx$w * 0.0062))
   search_offsets <- seq(-18L, 18L, by = 6L)
@@ -522,7 +543,15 @@ read_answers_cv <- function(img_path, cfg, layout) {
   notes <- character(0)
   inks_by_q <- list()
 
-  for (q in cfg$questions) {
+  # A question whose bubbles are printed on another page is left as NA, which
+  # is different from "" (printed here, left blank). Aggregation across the
+  # sheet fills NA from the page that does carry the row; "" stays unanswered.
+  this_page <- questions_on_page(cfg, layout, page_no)
+  for (q in setdiff(cfg$questions, this_page)) {
+    answers[[as.character(q)]] <- NA_character_
+  }
+
+  for (q in this_page) {
     q_chr <- as.character(q)
     col <- layout$QUESTION_COL[q_chr]
     y_pos <- layout$QUESTION_Y[q_chr]
@@ -672,6 +701,12 @@ decode_qr_cv <- function(img_path) {
   if (Sys.which("zbarimg") == "") {
     return(list(payload = NA_character_, note = "zbarimg not installed"))
   }
+  # Use the same retry-on-upscale path the scan checker uses, so a page that
+  # validates in check_scan_sequence() cannot then fail to decode here.
+  found <- tryCatch(decode_qr_all(img_path), error = function(e) character(0))
+  if (length(found) > 0) {
+    return(list(payload = found[[1]], note = ""))
+  }
   out <- tryCatch(
     system2("zbarimg", c("--quiet", "--raw", img_path), stdout = TRUE, stderr = TRUE),
     warning = function(w) structure(character(0), status = 1L),
@@ -696,13 +731,23 @@ parse_qr_payload <- function(payload) {
   out
 }
 
-cv_parse_page <- function(img_path, page_num, cfg, layout) {
-  read <- read_answers_cv(img_path, cfg, layout)
-  layout_dir <- dirname(attr(layout, "path") %||% "output/layout.R")
-  form_pdf <- file.path(layout_dir, "quizform_v1.pdf")
-  zid <- read_zid_cv(img_path, cfg, form_pdf)
+cv_parse_page <- function(img_path, page_num, cfg, layout, sheet_page = NA_integer_) {
   qr <- decode_qr_cv(img_path)
   qr_fields <- parse_qr_payload(qr$payload)
+  # Prefer the sheet page passed in (from the validated scan sequence); fall
+  # back to what this page's own QR says.
+  if (is.na(sheet_page) && !is.null(qr_fields$page)) {
+    sheet_page <- suppressWarnings(as.integer(qr_fields$page))
+  }
+  read <- read_answers_cv(img_path, cfg, layout, sheet_page)
+  layout_dir <- dirname(attr(layout, "path") %||% "output/layout.R")
+  form_pdf <- file.path(layout_dir, "quizform_v1.pdf")
+  # The zID grid is printed on the front of the sheet only.
+  zid <- if (is.na(sheet_page) || sheet_page == 1L) {
+    read_zid_cv(img_path, cfg, form_pdf)
+  } else {
+    list(zid = NA_character_, uncertain = FALSE, note = "")
+  }
   version <- if (!is.null(qr_fields$version) && qr_fields$version %in% cfg$valid_versions) {
     list(version = qr_fields$version, uncertain = FALSE, note = paste("QR:", qr$payload))
   } else {
@@ -719,6 +764,7 @@ cv_parse_page <- function(img_path, page_num, cfg, layout) {
 
   list(
     page         = page_num,
+    sheet_page   = sheet_page,
     ok           = TRUE,
     zid          = zid$zid,
     name         = NA_character_,
@@ -762,6 +808,33 @@ mark_scans_cv <- function(dir,
   progress <- readr::read_csv(csv_path, show_col_types = FALSE)
   if (!("name" %in% names(progress))) progress$name <- NA_character_
 
+  # Sheet grouping from check_scan_sequence(), when it has been run. Without it
+  # every page is treated as a whole sheet, which is correct for a single-page
+  # form and detectably wrong for a multi-page one.
+  seq_path <- file.path(dir, "scan_sequence.csv")
+  if (file.exists(seq_path)) {
+    seq_df <- readr::read_csv(seq_path, show_col_types = FALSE)
+    m <- match(basename(progress$file), seq_df$file)
+    progress$sheet      <- seq_df$sheet[m]
+    progress$sheet_page <- seq_df$page_no[m]
+    n_broken <- sum(is.na(progress$sheet))
+    message("Using scan sequence: ", length(unique(stats::na.omit(progress$sheet))),
+            " sheet(s)", if (n_broken) sprintf(", %d page(s) not in a complete sheet", n_broken) else "")
+    if (n_broken > 0) {
+      warning(n_broken, " page(s) are not part of a complete sheet and cannot be ",
+              "attributed to a student. See ", seq_path, call. = FALSE)
+    }
+  } else {
+    if (!("sheet" %in% names(progress))) progress$sheet <- NA_integer_
+    if (!("sheet_page" %in% names(progress))) progress$sheet_page <- NA_integer_
+    n_form_pages <- length(unique(stats::na.omit(as.integer(layout$QUESTION_PAGE))))
+    if (n_form_pages > 1) {
+      warning("This form has ", n_form_pages, " pages but no scan_sequence.csv was found. ",
+              "Run check_scan_sequence() first, or page 2 answers cannot be attributed.",
+              call. = FALSE)
+    }
+  }
+
   to_process <- seq_len(nrow(progress))
   if (isTRUE(dry_run)) {
     message("-- dry run: processing the first 3 pages only --")
@@ -774,7 +847,7 @@ mark_scans_cv <- function(dir,
     message(sprintf("  Page %d / %d  [%s] ...", page_num, nrow(progress), progress$file[idx]))
 
     parsed <- tryCatch(
-      cv_parse_page(img_path, page_num, cfg, layout),
+      cv_parse_page(img_path, page_num, cfg, layout, progress$sheet_page[idx]),
       error = function(e) list(
         page = page_num, ok = FALSE, zid = NA_character_, name = NA_character_,
         exam_version = NA_character_, answers = NULL, confidence = NA_character_,

@@ -44,8 +44,24 @@ score_results <- function(dir,
   # ---------------------------------------------------------------------------
   # Read inputs
   # ---------------------------------------------------------------------------
-  message("Reading progress CSV: ", csv_path)
-  progress <- readr::read_csv(csv_path, show_col_types = FALSE)
+  # A multi-page form is scored per sheet, not per page: sheets.csv carries one
+  # row per student with the answers from every page already joined. It is
+  # preferred whenever aggregate_sheets() has been run, and a single-page form
+  # produces the same rows either way.
+  sheets_path <- file.path(dir, "sheets.csv")
+  if (file.exists(sheets_path)) {
+    message("Reading sheets CSV:   ", sheets_path)
+    progress <- readr::read_csv(sheets_path, show_col_types = FALSE)
+  } else {
+    message("Reading progress CSV: ", csv_path)
+    progress <- readr::read_csv(csv_path, show_col_types = FALSE)
+    n_form_pages <- length(unique(stats::na.omit(as.integer(progress$sheet_page))))
+    if (n_form_pages > 1) {
+      warning("progress.csv holds ", n_form_pages, " pages per sheet but sheets.csv ",
+              "was not found. Run aggregate_sheets() first, or each page will be ",
+              "scored as if it were a whole paper.", call. = FALSE)
+    }
+  }
   if (!("name" %in% names(progress))) {
     progress$name <- NA_character_
   }

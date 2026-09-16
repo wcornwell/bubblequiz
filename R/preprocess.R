@@ -52,6 +52,9 @@ preprocess_scans <- function(pdf,
     name         = NA_character_,
     needs_review = NA,
     exam_version = NA_character_,
+    # Filled in by check_scan_sequence(); a single-page form leaves them NA.
+    sheet        = NA_integer_,
+    sheet_page   = NA_integer_,
     confidence   = NA_character_,
     notes        = NA_character_,
     error        = NA_character_

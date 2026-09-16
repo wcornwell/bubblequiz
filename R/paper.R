@@ -167,7 +167,7 @@ latex_inline_quiz <- function(cfg, blocks, version) {
     # version= field keeps the same spelling the marker already parses.
     sprintf("\\newcommand{\\bqpagepayload}{%s|page=\\the\\value{page}|pages=\\getpagerefnumber{LastPage}}",
             tex_escape(qr_payload)),
-    "\\newcommand{\\bqpageqr}{\\expanded{\\noexpand\\qrcode[height=0.95cm]{\\bqpagepayload}}}",
+    "\\newcommand{\\bqpageqr}{\\expanded{\\noexpand\\qrcode[height=1.3cm]{\\bqpagepayload}}}",
     # Corner fiducials go in the shipout background so they are drawn on EVERY
     # page. Emitting them as body content puts them on page 1 only, which leaves
     # later pages of a multi-page form with nothing for the marker to orient on.
@@ -184,7 +184,7 @@ latex_inline_quiz <- function(cfg, blocks, version) {
     # Repeat the version QR in the bottom-right of every page, clear of the
     # corner squares. Page 1 carries the header QR as well; the redundancy means
     # a torn or over-cropped page can still be matched to its version.
-    "  \\node[anchor=south east, inner sep=0pt] at ([xshift=-11mm, yshift=3mm]current page.south east) {\\bqpageqr};",
+    "  \\node[anchor=south east, inner sep=0pt] at ([xshift=-12mm, yshift=3mm]current page.south east) {\\bqpageqr};",
     "\\end{tikzpicture}}",
     "\\begin{document}",
     "\\begin{minipage}[t]{0.70\\linewidth}",
