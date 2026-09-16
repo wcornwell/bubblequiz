@@ -177,10 +177,12 @@ latex_inline_quiz <- function(cfg, blocks, version) {
     "  \\fill[black] ([xshift=-8mm, yshift= -3mm]current page.north east) rectangle ++( 5mm, -5mm);",
     "  \\fill[black] ([xshift= 3mm, yshift=  3mm]current page.south west) rectangle ++( 5mm,  5mm);",
     "  \\fill[black] ([xshift=-8mm, yshift=  3mm]current page.south east) rectangle ++( 5mm,  5mm);",
-    # A name line in the bottom-left of every page, mirroring the QR. Page 1
-    # also has the full name/zID header block; repeating it means a separated
-    # sheet can still be attributed to a student.
-    "  \\node[anchor=south west, inner sep=0pt, font=\\footnotesize] at ([xshift=11mm, yshift=4mm]current page.south west) {\\textbf{Name}~\\underline{\\hspace{55mm}}\\quad Page \\thepage\\ of \\pageref{LastPage}};",
+    # Page number on every page, plus a name line on the later pages only.
+    # Page 1 already carries the full name/zID header block, so repeating it
+    # there would give the student two name slots on the same page; pages after
+    # the first have no header, and need somewhere to write a name so a
+    # separated sheet can still be attributed.
+    "  \\node[anchor=south west, inner sep=0pt, font=\\footnotesize] at ([xshift=11mm, yshift=4mm]current page.south west) {\\ifnum\\value{page}>1 \\textbf{Name}~\\underline{\\hspace{55mm}}\\quad\\fi Page \\thepage\\ of \\pageref{LastPage}};",
     # Repeat the version QR in the bottom-right of every page, clear of the
     # corner squares. Page 1 carries the header QR as well; the redundancy means
     # a torn or over-cropped page can still be matched to its version.
