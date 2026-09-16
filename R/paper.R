@@ -132,11 +132,12 @@ latex_inline_quiz <- function(cfg, blocks, version) {
     c(
       "\\begin{samepage}",
       sprintf("\\questionblock{%d}{%s}", q$number, tex_escape(q$question)),
-      "\\begin{enumerate}[label=\\alph*., leftmargin=1.4em, itemsep=1pt, topsep=2pt]",
+      sprintf("\\begin{enumerate}[label=\\alph*., leftmargin=1.4em, itemsep=%s, topsep=2pt]",
+              cfg$spacing$option %||% "1pt"),
       sprintf("  \\item %s", tex_escape(opts)),
       "\\end{enumerate}",
       sprintf("\\answerline{%d}{%s}", q$number, bubble_row),
-      "\\vspace{5pt}",
+      sprintf("\\vspace{%s}", cfg$spacing$question %||% "5pt"),
       "\\end{samepage}"
     )
   }), use.names = FALSE)
@@ -147,6 +148,9 @@ latex_inline_quiz <- function(cfg, blocks, version) {
     "\\usepackage{fontspec}",
     "\\setmainfont{Helvetica Neue}",
     "\\usepackage{tikz}",
+    "\\usepackage{eso-pic}",
+    "\\usepackage{lastpage}",
+    "\\usepackage{refcount}",
     "\\usepackage{xcolor}",
     "\\usepackage{enumitem}",
     "\\usepackage[nolinks]{qrcode}",
@@ -154,15 +158,35 @@ latex_inline_quiz <- function(cfg, blocks, version) {
     "\\setlength{\\parindent}{0pt}",
     "\\setlength{\\parskip}{2pt}",
     "\\newcommand{\\bub}[1]{\\begin{tikzpicture}[baseline=-0.6ex]\\draw[line width=1.2pt](0,0) circle (8pt);\\node[font=\\fontsize{7.2}{7.2}\\selectfont\\bfseries] at (0,0){#1};\\end{tikzpicture}\\hspace{4pt}}",
-    "\\newcommand{\\questionblock}[2]{\\vspace{4pt}\\textbf{Q#1.} #2\\par}",
+    sprintf("\\newcommand{\\questionblock}[2]{\\vspace{%s}\\textbf{Q#1.} #2\\par}",
+            cfg$spacing$stem %||% "4pt"),
     "\\newcommand{\\answerline}[2]{\\textbf{Answer Q#1}\\quad #2\\par}",
-    "\\begin{document}",
+    # Per-page QR payload. The page and page-count fields are expanded at
+    # shipout, so every page identifies itself: a scanned stack can be checked
+    # for missing pages and reordered without relying on scan order. The
+    # version= field keeps the same spelling the marker already parses.
+    sprintf("\\newcommand{\\bqpagepayload}{%s|page=\\the\\value{page}|pages=\\getpagerefnumber{LastPage}}",
+            tex_escape(qr_payload)),
+    "\\newcommand{\\bqpageqr}{\\expanded{\\noexpand\\qrcode[height=0.95cm]{\\bqpagepayload}}}",
+    # Corner fiducials go in the shipout background so they are drawn on EVERY
+    # page. Emitting them as body content puts them on page 1 only, which leaves
+    # later pages of a multi-page form with nothing for the marker to orient on.
+    "\\AddToShipoutPictureBG{%",
     "\\begin{tikzpicture}[remember picture, overlay]",
     "  \\fill[black] ([xshift= 3mm, yshift= -3mm]current page.north west) rectangle ++( 5mm, -5mm);",
     "  \\fill[black] ([xshift=-8mm, yshift= -3mm]current page.north east) rectangle ++( 5mm, -5mm);",
     "  \\fill[black] ([xshift= 3mm, yshift=  3mm]current page.south west) rectangle ++( 5mm,  5mm);",
     "  \\fill[black] ([xshift=-8mm, yshift=  3mm]current page.south east) rectangle ++( 5mm,  5mm);",
-    "\\end{tikzpicture}",
+    # A name line in the bottom-left of every page, mirroring the QR. Page 1
+    # also has the full name/zID header block; repeating it means a separated
+    # sheet can still be attributed to a student.
+    "  \\node[anchor=south west, inner sep=0pt, font=\\footnotesize] at ([xshift=11mm, yshift=4mm]current page.south west) {\\textbf{Name}~\\underline{\\hspace{55mm}}\\quad Page \\thepage\\ of \\pageref{LastPage}};",
+    # Repeat the version QR in the bottom-right of every page, clear of the
+    # corner squares. Page 1 carries the header QR as well; the redundancy means
+    # a torn or over-cropped page can still be matched to its version.
+    "  \\node[anchor=south east, inner sep=0pt] at ([xshift=-11mm, yshift=3mm]current page.south east) {\\bqpageqr};",
+    "\\end{tikzpicture}}",
+    "\\begin{document}",
     "\\begin{minipage}[t]{0.70\\linewidth}",
     sprintf("{\\LARGE\\bfseries %s}\\\\[1pt]", tex_escape(cfg$title)),
     sprintf("{\\normalsize %s}", tex_escape(cfg$subtitle)),
@@ -192,6 +216,13 @@ latex_inline_quiz <- function(cfg, blocks, version) {
             cfg$id$digits - 1L),
     "\\end{minipage}",
     "\\vspace{3pt}\\rule{\\linewidth}{1.2pt}",
+    # Optional instruction line, printed once under the header. Inline forms
+    # print nothing unless exam.yml sets instructions:, so existing papers are
+    # unchanged.
+    if (!is.null(cfg$instructions)) {
+      c(sprintf("\\vspace{2pt}\\textbf{%s}\\par", tex_escape(cfg$instructions)),
+        "\\vspace{2pt}\\rule{\\linewidth}{0.6pt}")
+    },
     question_tex,
     "\\end{document}"
   )

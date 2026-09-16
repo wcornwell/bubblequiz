@@ -3,6 +3,9 @@
 \usepackage{fontspec}
 \setmainfont{Helvetica Neue}
 \usepackage{tikz}
+\usepackage{eso-pic}
+\usepackage{lastpage}
+\usepackage{refcount}
 \usepackage{xcolor}
 \usepackage{enumitem}
 \usepackage[nolinks]{qrcode}
@@ -12,13 +15,18 @@
 \newcommand{\bub}[1]{\begin{tikzpicture}[baseline=-0.6ex]\draw[line width=1.2pt](0,0) circle (8pt);\node[font=\fontsize{7.2}{7.2}\selectfont\bfseries] at (0,0){#1};\end{tikzpicture}\hspace{4pt}}
 \newcommand{\questionblock}[2]{\vspace{4pt}\textbf{Q#1.} #2\par}
 \newcommand{\answerline}[2]{\textbf{Answer Q#1}\quad #2\par}
-\begin{document}
+\newcommand{\bqpagepayload}{bubblequiz|course=BES2041|version=1|questions=1,2,3,4,5,6|page=\the\value{page}|pages=\getpagerefnumber{LastPage}}
+\newcommand{\bqpageqr}{\expanded{\noexpand\qrcode[height=0.95cm]{\bqpagepayload}}}
+\AddToShipoutPictureBG{%
 \begin{tikzpicture}[remember picture, overlay]
   \fill[black] ([xshift= 3mm, yshift= -3mm]current page.north west) rectangle ++( 5mm, -5mm);
   \fill[black] ([xshift=-8mm, yshift= -3mm]current page.north east) rectangle ++( 5mm, -5mm);
   \fill[black] ([xshift= 3mm, yshift=  3mm]current page.south west) rectangle ++( 5mm,  5mm);
   \fill[black] ([xshift=-8mm, yshift=  3mm]current page.south east) rectangle ++( 5mm,  5mm);
-\end{tikzpicture}
+  \node[anchor=south west, inner sep=0pt, font=\footnotesize] at ([xshift=11mm, yshift=4mm]current page.south west) {\textbf{Name}~\underline{\hspace{55mm}}\quad Page \thepage\ of \pageref{LastPage}};
+  \node[anchor=south east, inner sep=0pt] at ([xshift=-11mm, yshift=3mm]current page.south east) {\bqpageqr};
+\end{tikzpicture}}
+\begin{document}
 \begin{minipage}[t]{0.70\linewidth}
 {\LARGE\bfseries BES2041 Lecture Quiz Test}\\[1pt]
 {\normalsize Multiple Choice Quiz}

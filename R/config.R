@@ -266,6 +266,14 @@ load_exam_config <- function(path = default_config_path()) {
       digits = as.integer(y$id$digits %||% 7L)
     ),
     n_cols       = as.integer(y$layout$columns %||% 2L),
+    # Vertical breathing room on inline quiz forms. All are LaTeX lengths.
+    # Raising question_spacing is the usual way to spread fewer questions
+    # across more pages so students have room to think and write.
+    spacing      = list(
+      question = as.character(y$layout$question_spacing %||% "5pt"),
+      option   = as.character(y$layout$option_spacing   %||% "1pt"),
+      stem     = as.character(y$layout$stem_spacing     %||% "4pt")
+    ),
     instructions = y$instructions %||% NULL,
     sections     = y$sections
   )
