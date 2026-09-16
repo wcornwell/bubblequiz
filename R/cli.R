@@ -21,6 +21,7 @@ Commands:
   calibrate                 rendered sheet -> output/layout.R + preview JPEG
   paper                     output/questions_v*.md -> printable PDFs
   forms                     questions + bubbles inline -> quizform_v*.pdf
+  forms-all                 combine quizform_v*.pdf into one print PDF
   build                     versions + inline forms + calibrate
   preprocess <scan.pdf>     scanned PDF  -> page images + progress.csv
   mark --dir <folder>       grade scanned pages with the Claude vision API
@@ -136,9 +137,14 @@ bq_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
     "forms" = make_quiz_forms(config, outdir,
                               render = !isTRUE(o[["no-render"]])),
 
+    "forms-all" = combine_quiz_forms(
+      config, outdir,
+      output = o$output %||% file.path(outdir, "quizforms_all_versions.pdf")),
+
     "build" = {
       generate_versions(config, questions, outdir)
       make_quiz_forms(config, outdir)
+      combine_quiz_forms(config, outdir)
       calibrate_coords(config, file.path(outdir, "quizform_v1.pdf"), layout,
                        file.path(outdir, "layout_preview.jpeg"))
     },

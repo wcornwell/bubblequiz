@@ -235,3 +235,29 @@ make_quiz_forms <- function(config = default_config_path(),
   }
   invisible(written)
 }
+
+#' Combine all quiz form versions into one print PDF
+#'
+#' The output contains each version as a complete block, in version order. For
+#' double-sided printing, each multi-page version stays together before the next
+#' version begins.
+#'
+#' @param config Path to the exam config YAML, or a loaded config list.
+#' @param outdir Directory containing `quizform_v*.pdf`.
+#' @param output Output PDF path.
+#' @return Invisibly, the output PDF path.
+#' @export
+combine_quiz_forms <- function(config = default_config_path(),
+                               outdir = "output",
+                               output = file.path(outdir, "quizforms_all_versions.pdf")) {
+  cfg <- if (is.list(config)) config else load_exam_config(config)
+  pdfs <- file.path(outdir, sprintf("quizform_v%s.pdf", cfg$valid_versions))
+  missing <- pdfs[!file.exists(pdfs)]
+  if (length(missing) > 0) {
+    stop("Missing quiz form PDF(s): ", paste(missing, collapse = ", "),
+         "\nRun `bubblequiz forms` first.", call. = FALSE)
+  }
+  qpdf::pdf_combine(pdfs, output = output)
+  message("Wrote: ", output)
+  invisible(output)
+}

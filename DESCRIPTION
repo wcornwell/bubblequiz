@@ -23,6 +23,7 @@ Imports:
     jsonlite,
     base64enc,
     curl,
+    qpdf,
     stats,
     tools,
     utils
