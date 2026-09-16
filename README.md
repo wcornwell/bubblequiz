@@ -199,6 +199,40 @@ PDF output
 
 Students should use black or dark blue pen and fill bubbles completely.
 
+## Check A Large Stack Before Marking
+
+A multi-page form is printed duplex, so a 150-student quiz arrives as one
+~300-page PDF whose pages must read 1,2,1,2 and so on. Sheet feeders swallow
+pages, double-feed and occasionally reverse a sheet, and none of that is
+visible in the page images alone. Every page carries a QR giving its version,
+its page number and the sheet length, so the stack can be checked before any
+marking happens:
+
+```r
+preprocess_scans("scans.pdf", "exam.yml", force = TRUE)
+check_scan_sequence("scans")
+```
+
+Output:
+
+```text
+Pages:  300
+Sheets: 150 complete
+Sequence is clean; every page belongs to a complete sheet.
+```
+
+or, when the feeder misbehaved:
+
+```text
+PROBLEM PAGES: 1 -- rescan or handle these before marking
+  page 7    page_0007.png          orphan page 2 (no page 1 before it)
+```
+
+`scans/scan_sequence.csv` has a row per page with its assigned `sheet` number.
+One feeder error does not cascade: the walk resynchronises at the next page 1,
+so the rest of the stack still groups correctly and only the affected sheet
+needs rescanning.
+
 ## Mark And Score
 
 Place the scan PDF in the course folder, for example:
