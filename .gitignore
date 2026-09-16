@@ -7,5 +7,7 @@
 ..Rcheck/
 output/
 responses/
-example/
+example/*
+!example/six-question-quiz/
+!example/six-question-quiz/**
 *.tar.gz

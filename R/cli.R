@@ -16,6 +16,10 @@ Commands:
                             into a course repository
   transcribe <media-or-url>  lecture recording/YouTube -> transcript text
   quiz --transcript <file>   transcript text -> questions.md
+  candidates --transcript <file>
+                            transcript text -> oversized candidate bank
+  select --selected <ids>    candidate bank -> final questions.md
+  verify --transcript <file> check questions are supported by lecture text
   versions                  questions.md -> output/questions_v*.md + answer_key.csv
   sheets                    exam.yml     -> output/bubblesheet_v*.pdf
   calibrate                 rendered sheet -> output/layout.R + preview JPEG
@@ -35,6 +39,9 @@ Common options:
   --questions <path>  Question source markdown  [default: questions.md]
   --transcript <path> Lecture transcript text
   --n-questions <n>   Number of generated MCQs   [default: config MCQ count]
+  --n-candidates <n>  Candidate MCQs to generate [default: about 2x quiz]
+  --candidates <path> Candidate bank markdown     [default: output/question_candidates.md]
+  --selected <ids>    Comma-separated candidate question numbers
   --layout <path>     Calibrated layout file    [default: output/layout.R]
   --key <path>        Answer key CSV            [default: output/answer_key.csv]
   --model <id>        Anthropic model           [default: claude-sonnet-4-6]
@@ -97,6 +104,7 @@ bq_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
   questions <- o$questions %||% "questions.md"
   layout    <- o$layout    %||% file.path(outdir, "layout.R")
   key       <- o$key       %||% file.path(outdir, "answer_key.csv")
+  candidates <- o$candidates %||% file.path(outdir, "question_candidates.md")
 
   res <- switch(cmd,
     "init" = init_course(o$dir %||% "."),
@@ -120,6 +128,32 @@ bq_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
         output     = questions,
         model      = o[["openai-model"]] %||% "gpt-5",
         n_questions = if (is.null(o[["n-questions"]])) NULL else as.integer(o[["n-questions"]]))
+    },
+
+    "candidates" = {
+      transcript <- o$transcript %||% if (length(pos) > 0) pos[1] else NULL
+      if (is.null(transcript)) stop("Usage: bubblequiz candidates --transcript <file>", call. = FALSE)
+      generate_question_candidates(
+        transcript = transcript,
+        config     = config,
+        output     = candidates,
+        model      = o[["openai-model"]] %||% "gpt-5",
+        n_candidates = if (is.null(o[["n-candidates"]])) NULL else as.integer(o[["n-candidates"]]))
+    },
+
+    "select" = {
+      if (is.null(o$selected)) stop("Usage: bubblequiz select --selected <ids>", call. = FALSE)
+      select_questions(candidates = candidates, selected = o$selected, output = questions)
+    },
+
+    "verify" = {
+      transcript <- o$transcript %||% if (length(pos) > 0) pos[1] else NULL
+      if (is.null(transcript)) stop("Usage: bubblequiz verify --transcript <file>", call. = FALSE)
+      check_questions_in_transcript(
+        questions  = questions,
+        transcript = transcript,
+        output     = o$output %||% file.path(outdir, "question_coverage.csv"),
+        model      = o[["openai-model"]] %||% "gpt-5")
     },
 
     "versions" = generate_versions(config, questions, outdir),
