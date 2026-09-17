@@ -233,11 +233,13 @@ questions_to_markdown <- function(quiz, marks_each = 1) {
     number <- q$number %||% i
     opts <- as.character(q$options)
     if (length(opts) != 5) stop("Generated question ", number, " does not have 5 options.", call. = FALSE)
+    stem <- trimws(as.character(q$question))
+    stem <- sub("^\\[[^]]*mark[^]]*\\][[:space:]]*", "", stem, ignore.case = TRUE)
     lines <- c(
       lines,
       sprintf("**Question %d [%s mark%s]:** %s",
               as.integer(number), marks_each, if (as.numeric(marks_each) == 1) "" else "s",
-              trimws(as.character(q$question))),
+              stem),
       "",
       sprintf("%s. %s", letters[seq_along(opts)], trimws(opts)),
       "",
