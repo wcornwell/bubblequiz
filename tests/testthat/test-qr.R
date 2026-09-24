@@ -39,3 +39,24 @@ test_that("a page with no QR decodes to nothing", {
   magick::image_write(magick::image_blank(1654, 2339, "white"), f)
   expect_length(decode_qr_all(f), 0)
 })
+
+test_that("a QR with faded printing still decodes", {
+  # Bottom-right corner of a real scanned page whose QR printed with a faded,
+  # smudged patch. The first enhancements miss it; a darker threshold reads it.
+  skip_without_scan_tools()
+  img <- magick::image_read(test_path("fixtures", "qr-faded-corner.png"))
+  run <- function(path) {
+    out <- suppressWarnings(system2("zbarimg", c("--quiet", "--raw", shQuote(path)),
+                                    stdout = TRUE, stderr = FALSE))
+    out[grepl("^bubblequiz", trimws(out))]
+  }
+  found <- character(0)
+  for (enh in QR_ENHANCERS) {
+    found <- run_image(enh(img), run)
+    if (length(found)) break
+  }
+  expect_length(found, 1)
+  fields <- parse_qr_payload(found[[1]])
+  expect_equal(fields$version, "4")
+  expect_equal(fields$page, "1")
+})

@@ -507,18 +507,20 @@ ink_score <- function(gray, cx, cy, radius) {
   255 - mean(vals, na.rm = TRUE)
 }
 
-# Bubble reading thresholds, in units of ink_score() above the blank form.
-# Measured on real scans (Sept 2026, 11 sheets, 200 dpi): filled answer
-# bubbles scored >= 44.7 and empty ones <= 9.2; filled zID bubbles >= 37.9 and
-# empty ones <= 27.2, with the filled one always >= 26 above the rest of its
-# column. Each rule leaves a margin on both sides, and anything between the
-# lines is flagged for a human rather than guessed.
+# Bubble reading thresholds, in units of bubble_score(): ink above the blank
+# form. Measured on real scans (Sept 2026, 200 dpi, 11 hand-marked sheets):
+# filled answer bubbles scored >= 34.8 and empty ones <= -0.5; filled zID
+# bubbles >= 30.6 and empty ones <= 12.6. Each rule leaves a margin on both
+# sides, and anything between the lines is flagged for a human, not guessed.
 #   radius / search: disc size and registration slack, as fractions of width.
 #   mark:  a bubble this far above the blank form is a mark.
 #   blank: a row whose darkest bubble is below this is unanswered.
 #   gap:   the chosen bubble must beat every other bubble in its row by this.
-ANSWER_READ <- list(radius = 0.0075, search = 0.0024, mark = 25, blank = 15, gap = 15)
-ZID_READ    <- list(radius = 0.0055, search = 0.0012, mark = 32, blank = 20, gap = 12)
+# A second bubble at or above `mark` is a second mark, and flags the row
+# whatever the gap: on the full first session (81 sheets) that caught three
+# corrections that a gap-only rule accepted wrongly.
+ANSWER_READ <- list(radius = 0.0075, search = 0.0024, mark = 18, blank = 10, gap = 12)
+ZID_READ    <- list(radius = 0.0055, search = 0.0012, mark = 22, blank = 16, gap = 12)
 
 classify_bubble_row <- function(inks, rule) {
   # Checked before sorting: sort() silently drops NA, which would hide an
@@ -538,6 +540,15 @@ classify_bubble_row <- function(inks, rule) {
     return(list(answer = paste0(choice, "*"), uncertain = TRUE,
                 note = sprintf("faint mark: %s %.1f", choice, top)))
   }
+  # Two marks in one row always go to a person, however far apart their
+  # scores. A crossed-out bubble is a filled bubble with more ink on top, so it
+  # usually scores darker than the answer the student meant -- on real scans
+  # the darker of two marks was the crossed-out one as often as not.
+  if (second >= rule$mark) {
+    return(list(answer = paste0(choice, "*"), uncertain = TRUE,
+                note = sprintf("two marks: %s %.1f and %s %.1f (one may be crossed out)",
+                               choice, top, names(inks)[2], second)))
+  }
   if (top - second < rule$gap) {
     return(list(answer = paste0(choice, "*"), uncertain = TRUE,
                 note = sprintf("ambiguous row: top=%s %.1f, second=%s %.1f",
@@ -549,16 +560,20 @@ classify_bubble_row <- function(inks, rule) {
 # bubble_score: how much darker the scan is than the blank form inside one
 # bubble. Subtracting the blank form cancels the printed letter or digit, which
 # otherwise dominates a faint mark: an empty "8" carries far more ink than an
-# empty "1". The scan is searched over a small window to absorb registration
-# error; the blank form is rendered from the PDF and needs no search.
+# empty "1". The scan is sampled over a small window around the mapped centre
+# to absorb registration error, and the median taken: a fill is dark wherever
+# the disc lands, while a printed digit a pixel out of register is dark only at
+# some offsets. (Taking the maximum instead picked the worst-aligned offset and
+# pushed empty zID bubbles to within 10 points of real marks.) The blank form
+# is rendered from the PDF and needs no search.
 bubble_score <- function(ctx, blank_ctx, u, v, rule) {
   radius <- max(3L, as.integer(round(ctx$w * rule$radius)))
   step   <- max(1L, as.integer(round(ctx$w * rule$search / 2)))
   offs   <- seq(-2L * step, 2L * step, by = step)
   pt <- ctx$map_xy(u, v)
-  scan_ink <- max(vapply(offs, function(dx) max(vapply(offs, function(dy) {
+  scan_ink <- stats::median(unlist(lapply(offs, function(dx) vapply(offs, function(dy) {
     ink_score(ctx$gray, as.integer(pt["x"] + dx), as.integer(pt["y"] + dy), radius)
-  }, numeric(1))), numeric(1)))
+  }, numeric(1)))))
   bpt <- blank_ctx$map_xy(u, v)
   b_radius <- max(3L, as.integer(round(blank_ctx$w * rule$radius)))
   scan_ink - ink_score(blank_ctx$gray, as.integer(bpt["x"]), as.integer(bpt["y"]), b_radius)
@@ -802,7 +817,8 @@ parse_qr_payload <- function(payload) {
   out
 }
 
-cv_parse_page <- function(img_path, page_num, cfg, layouts, sheet_page = NA_integer_) {
+cv_parse_page <- function(img_path, page_num, cfg, layouts, sheet_page = NA_integer_,
+                          seq_version = NA_character_, seq_status = NA_character_) {
   qr <- decode_qr_cv(img_path)
   qr_fields <- parse_qr_payload(qr$payload)
   # Prefer the sheet page passed in (from the validated scan sequence); fall
@@ -817,6 +833,10 @@ cv_parse_page <- function(img_path, page_num, cfg, layouts, sheet_page = NA_inte
   per_version <- is_layout_set(layouts)
   version <- if (!is.null(qr_fields$version) && qr_fields$version %in% cfg$valid_versions) {
     list(version = qr_fields$version, uncertain = FALSE, note = "")
+  } else if (!is.na(seq_version) && seq_version %in% cfg$valid_versions) {
+    # The sequence check identified this page from the other side of its sheet.
+    list(version = seq_version, uncertain = TRUE,
+         note = "version taken from the other side of the sheet")
   } else {
     list(version = NA_character_, uncertain = TRUE,
          note = paste(c(qr$note, "version unknown: page QR unreadable"), collapse = " | "))
@@ -848,8 +868,12 @@ cv_parse_page <- function(img_path, page_num, cfg, layouts, sheet_page = NA_inte
 
   # A page is only trusted when every part of it was read cleanly. Anything
   # less goes to a human rather than into the gradebook.
+  # A sheet the sequence check had to recover (scanned back first, or a side
+  # identified from the other) is marked, but a person confirms it.
+  recovered <- !is.na(seq_status) && startsWith(seq_status, "ok:")
+  if (recovered) notes <- c(notes, sub("^ok: ", "", seq_status))
   needs_review <- uncertain || isTRUE(zid$uncertain) || isTRUE(version$uncertain) ||
-    !isTRUE(read$marker_ok) || (on_front && is.na(zid$zid))
+    !isTRUE(read$marker_ok) || (on_front && is.na(zid$zid)) || recovered
 
   list(
     page         = page_num,
@@ -984,6 +1008,8 @@ mark_scans_cv <- function(dir,
     m <- match(basename(progress$file), seq_df$file)
     progress$sheet      <- seq_df$sheet[m]
     progress$sheet_page <- seq_df$page_no[m]
+    seq_version <- as.character(seq_df$version[m])
+    seq_status  <- as.character(seq_df$status[m])
     n_broken <- sum(is.na(progress$sheet))
     message("Using scan sequence: ", length(unique(stats::na.omit(progress$sheet))),
             " sheet(s)", if (n_broken) sprintf(", %d page(s) not in a complete sheet", n_broken) else "")
@@ -992,6 +1018,8 @@ mark_scans_cv <- function(dir,
               "attributed to a student. See ", seq_path, call. = FALSE)
     }
   } else {
+    seq_version <- rep(NA_character_, nrow(progress))
+    seq_status  <- rep(NA_character_, nrow(progress))
     if (!("sheet" %in% names(progress))) progress$sheet <- NA_integer_
     if (!("sheet_page" %in% names(progress))) progress$sheet_page <- NA_integer_
     first <- if (is_layout_set(layout)) layout[[1]] else layout
@@ -1015,7 +1043,8 @@ mark_scans_cv <- function(dir,
     message(sprintf("  Page %d / %d  [%s] ...", page_num, nrow(progress), progress$file[idx]))
 
     parsed <- tryCatch(
-      cv_parse_page(img_path, page_num, cfg, layout, progress$sheet_page[idx]),
+      cv_parse_page(img_path, page_num, cfg, layout, progress$sheet_page[idx],
+                    seq_version = seq_version[idx], seq_status = seq_status[idx]),
       error = function(e) list(
         page = page_num, ok = FALSE, zid = NA_character_, name = NA_character_,
         exam_version = NA_character_, answers = NULL, confidence = NA_character_,

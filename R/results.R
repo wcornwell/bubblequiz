@@ -4,8 +4,21 @@
 # from overrides.csv, scores each student against their own exam version, and
 # writes results.csv. Pages that never marked cleanly still get a row, with NA
 # scores, so nobody silently disappears between the scanner and the gradebook.
+#
+# Every row carries needs_review and notes. A flagged sheet keeps its
+# provisional score but stays flagged until a person has entered overrides for
+# it (see score_results()), and export_moodle() leaves flagged sheets out of the
+# upload.
 
 #' Score marked bubble sheets against the answer key
+#'
+#' Corrections go in `overrides.csv` in the scan folder, one row per change,
+#' with columns `file`, `page`, `zid`, `name`, `question`, `response`. Identify
+#' the sheet by `file` (any page of it, e.g. `page_0036.png`) or by `zid`.
+#' `question` is a question number (`response` = the letter, or blank for
+#' unanswered), `zid` (`response` = the corrected zID), or `ok` (checked, no
+#' change needed). Any row for a sheet marks it reviewed; a sheet still needs
+#' review while it holds an uncertain answer (`B*`) or an invalid zID.
 #'
 #' @param dir Folder created by [preprocess_scans()] and filled in by [mark_scans()].
 #' @param key Path to `answer_key.csv` from [generate_versions()].
@@ -65,6 +78,19 @@ score_results <- function(dir,
   if (!("name" %in% names(progress))) {
     progress$name <- NA_character_
   }
+  if (!("needs_review" %in% names(progress))) progress$needs_review <- FALSE
+  if (!("notes" %in% names(progress))) progress$notes <- NA_character_
+  progress$needs_review <- as.logical(progress$needs_review) %in% TRUE
+  progress$reviewed <- FALSE
+  zid_pattern <- sprintf("^%s[0-9]{%d}$", cfg$id$prefix, as.integer(cfg$id$digits))
+
+  # All the page files of each row, so an override can name any page of a
+  # sheet -- a reviewer checking an answer on the back names the back page.
+  row_files <- if ("files" %in% names(progress)) {
+    strsplit(as.character(progress$files), ";", fixed = TRUE)
+  } else {
+    as.list(as.character(progress$file))
+  }
 
 
   if (file.exists(overrides_path)) {
@@ -83,14 +109,19 @@ score_results <- function(dir,
     for (i in seq_len(nrow(overrides))) {
       ov <- overrides[i, ]
 
-      q_raw <- suppressWarnings(as.integer(trimws(as.character(ov$question))))
-      if (is.na(q_raw) || !q_raw %in% EXPECTED_QUESTIONS) {
+      # `question` is a question number, or one of two keywords:
+      #   zid -- `response` is the corrected zID
+      #   ok  -- the sheet was checked and needs no change
+      q_text <- tolower(trimws(as.character(ov$question)))
+      q_raw <- suppressWarnings(as.integer(q_text))
+      kind <- if (identical(q_text, "zid")) "zid" else if (identical(q_text, "ok")) "ok" else "answer"
+      if (kind == "answer" && (is.na(q_raw) || !q_raw %in% EXPECTED_QUESTIONS)) {
         warning(sprintf("Skipping override row %d: invalid question '%s'", i, ov$question))
         n_skipped <- n_skipped + 1L
         next
       }
 
-      q_col <- paste0("q", q_raw)
+      q_col <- if (kind == "answer") paste0("q", q_raw) else NA_character_
       file_key <- ""
       if (has_override_file_col) {
         file_val <- ov[["file"]]
@@ -114,7 +145,7 @@ score_results <- function(dir,
         next
       }
 
-      idx_file <- if (has_file) which(as.character(progress$file) == file_key) else integer(0)
+      idx_file <- if (has_file) which(vapply(row_files, function(f) file_key %in% f, logical(1))) else integer(0)
       idx_zid  <- if (has_zid)  which(as.character(progress$zid) == zid_key)  else integer(0)
 
       idx <- integer(0)
@@ -151,6 +182,29 @@ score_results <- function(dir,
         idx <- idx_zid[1]
       }
 
+      if (kind == "ok") {
+        progress$reviewed[idx] <- TRUE
+        message(sprintf("Applied override row %d: file=%s zid=%s checked, no change",
+                        i, as.character(progress$file[idx]), as.character(progress$zid[idx])))
+        n_applied <- n_applied + 1L
+        next
+      }
+      if (kind == "zid") {
+        new_zid <- tolower(trimws(as.character(ov$response)))
+        if (is.na(new_zid) || !grepl(zid_pattern, new_zid)) {
+          warning(sprintf("Skipping override row %d: '%s' is not a valid %s",
+                          i, ov$response, cfg$id$label))
+          n_skipped <- n_skipped + 1L
+          next
+        }
+        message(sprintf("Applied override row %d: file=%s zid %s -> %s",
+                        i, as.character(progress$file[idx]), as.character(progress$zid[idx]), new_zid))
+        progress$zid[idx] <- new_zid
+        progress$reviewed[idx] <- TRUE
+        n_applied <- n_applied + 1L
+        next
+      }
+
       resp_raw <- toupper(trimws(as.character(ov$response)))
       resp <- if (is.na(resp_raw) || resp_raw == "") NA_character_ else resp_raw
 
@@ -162,6 +216,7 @@ score_results <- function(dir,
 
       old_val <- progress[[q_col]][idx]
       progress[[q_col]][idx] <- resp
+      progress$reviewed[idx] <- TRUE
 
       old_print <- if (is.na(old_val) || nchar(trimws(as.character(old_val))) == 0) "<blank>" else toupper(trimws(as.character(old_val)))
       new_print <- if (is.na(resp)) "<blank>" else resp
@@ -180,6 +235,28 @@ score_results <- function(dir,
   }
 
 
+
+  # ---------------------------------------------------------------------------
+  # What still needs a person, after overrides. A sheet the marker flagged is
+  # cleared once any override row has been entered for it (the reviewer looked
+  # at it). Independently of that, a sheet always needs review while it holds
+  # an answer the marker was unsure of ("B*") or a zID that is not a valid ID:
+  # those must be corrected by an override, not waved through.
+  # ---------------------------------------------------------------------------
+  q_cols_all <- paste0("q", EXPECTED_QUESTIONS)
+  unsure_answer <- vapply(seq_len(nrow(progress)), function(i) {
+    any(grepl("\\*$", vapply(q_cols_all, function(qc) as.character(progress[[qc]][i]), character(1))))
+  }, logical(1))
+  bad_zid <- is.na(progress$zid) | !grepl(zid_pattern, as.character(progress$zid))
+  progress$needs_review <- (progress$needs_review & !progress$reviewed) |
+    unsure_answer | bad_zid
+  still <- character(nrow(progress))
+  still[unsure_answer & progress$reviewed] <- "reviewed, but an uncertain answer (*) still needs an override"
+  still[bad_zid & progress$reviewed] <- "reviewed, but the zID is still not valid"
+  old_notes <- ifelse(is.na(progress$notes), "", as.character(progress$notes))
+  progress$notes <- ifelse(nzchar(still),
+                           ifelse(nzchar(old_notes), paste(still, old_notes, sep = " | "), still),
+                           old_notes)
 
   message("Reading answer key:   ", key_path)
   key <- readr::read_csv(key_path, show_col_types = FALSE)
@@ -204,6 +281,13 @@ score_results <- function(dir,
       sum(bad_versions, na.rm = TRUE)), call. = FALSE)
   }
 
+  review_cols <- function(student) {
+    data.frame(needs_review = isTRUE(student$needs_review),
+               reviewed     = isTRUE(student$reviewed),
+               notes        = as.character(student$notes %||% NA_character_),
+               stringsAsFactors = FALSE)
+  }
+
   make_stub_row <- function(student) {
     row <- data.frame(
       file         = student$file,
@@ -216,6 +300,8 @@ score_results <- function(dir,
       pct          = NA_real_,
       stringsAsFactors = FALSE
     )
+    row <- cbind(row, review_cols(student))
+    row$needs_review <- TRUE
     for (nm in q_col_names) row[[nm]] <- NA_integer_
     row
   }
@@ -262,6 +348,7 @@ score_results <- function(dir,
       pct          = round(score / length(EXPECTED_QUESTIONS) * 100, 1),
       stringsAsFactors = FALSE
     )
+    row <- cbind(row, review_cols(student))
     for (nm in q_col_names) row[[nm]] <- q_vals[[nm]]
     row
   })
@@ -297,6 +384,8 @@ score_results <- function(dir,
   n_scored <- nrow(scored)
   cat("\n========================================\n")
   cat(sprintf("Students scored : %d / %d\n", n_scored, nrow(score_rows)))
+  cat(sprintf("Need review     : %d  (see the needs_review and notes columns)\n",
+              sum(score_rows$needs_review)))
 
   if (n_scored > 0) {
     cat(sprintf("Mean score      : %.1f / %d  (%.1f%%)\n",

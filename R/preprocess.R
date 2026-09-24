@@ -71,14 +71,21 @@ preprocess_scans <- function(pdf,
   csv_path <- file.path(out_dir, "progress.csv")
   readr::write_csv(progress, csv_path)
 
+  # Never overwrite overrides.csv: it holds a person's review of the sheets, and
+  # re-extracting the pages must not throw that work away.
   overrides_path <- file.path(out_dir, "overrides.csv")
-  readr::write_csv(tibble::tibble(
-    page     = character(),
-    zid      = character(),
-    name     = character(),
-    question = integer(),
-    response = character()
-  ), overrides_path)
+  if (!file.exists(overrides_path)) {
+    readr::write_csv(tibble::tibble(
+      file     = character(),
+      page     = character(),
+      zid      = character(),
+      name     = character(),
+      question = character(),
+      response = character()
+    ), overrides_path)
+  } else {
+    message("Keeping existing overrides: ", overrides_path)
+  }
 
   message(sprintf("Extracted %d page(s) to: %s", n_pages, out_dir))
   message("Progress CSV initialised:  ", csv_path)

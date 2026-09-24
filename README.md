@@ -189,8 +189,8 @@ Use duplex printing. For six questions, each version fits on one double-sided sh
 Use:
 
 ```text
-Color or grayscale
-300 dpi
+Grayscale (colour works, but files are ~3x larger and it reads no better)
+200-300 dpi
 No auto-crop if possible
 No text enhancement / high-contrast cleanup
 No auto-rotate if possible
@@ -249,7 +249,13 @@ check_scan_sequence("scans")
 mark_scans_cv("scans", config = "exam.yml", layout = "output/layout.R")
 aggregate_sheets("scans", config = "exam.yml")
 score_results("scans", key = "output/answer_key.csv", config = "exam.yml")
+export_moodle("scans", output = "moodle_import.csv", grade_item = "Week 2 quiz",
+              config = "exam.yml")
 ```
+
+`export_moodle()` takes several scan folders at once, for a class scanned in
+batches. Rendering needs `pdftoppm` (poppler) and QR reading needs `zbarimg`
+(zbar) on the PATH.
 
 Outputs:
 
@@ -258,10 +264,41 @@ scans/scan_sequence.csv   one row per page: version, page number, sheet
 scans/progress.csv        one row per page, as read by the marker
 scans/marked-cv/          each page with the recorded answers drawn on
 scans/sheets.csv          one row per student, pages joined
-scans/results.csv         scores
+scans/results.csv         scores, with needs_review and notes
+moodle_import.csv         Username + grade, clean and reviewed sheets only
+moodle_import_to_review.csv   every sheet left out, with its pages and why
 ```
 
-Rows needing manual review are flagged in `progress.csv` and `sheets.csv`.
+### Reviewing Flagged Sheets
+
+The marker never guesses. A sheet is flagged (`needs_review`, with the reason
+in `notes`) when anything on it was not read cleanly:
+
+```text
+two marks          two bubbles filled in one row -- usually a correction;
+                   the crossed-out one is often the darker, so it is not chosen
+faint mark         a mark too light to accept
+blank              an unanswered question, or an empty zID column
+ambiguous          two bubbles too close to call
+QR unreadable      version taken from the other side of the sheet
+back side first    a sheet put through the scanner the wrong way over
+```
+
+Open the page named in `moodle_import_to_review.csv`, decide, and add a row to
+`overrides.csv` in that scan folder:
+
+```text
+file,page,zid,name,question,response
+page_0036.png,,,,4,B          Q4 is B (the A was crossed out)
+page_0031.png,,,,zid,z5760126 correct the zID
+page_0047.png,,,,ok,          checked; nothing to change
+```
+
+`file` can be any page of the sheet. Then re-run `score_results()` and
+`export_moodle()`. A sheet leaves the review list once it has an override row,
+but never while it still holds an uncertain answer (`B*`) or an invalid zID:
+those must be set explicitly. `overrides.csv` is never overwritten by
+`preprocess_scans()`, so re-running the pipeline keeps the review.
 
 For a single-page form, `check_scan_sequence()` and `aggregate_sheets()` are
 harmless no-ops: every page is its own sheet and `sheets.csv` matches

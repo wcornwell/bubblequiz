@@ -30,13 +30,17 @@ synthetic_run <- local({
            distort = list()),
       # every mark faint
       list(version = "2", zid = "9111111", answers = c("A", "A", "A", "A", "A", "A"),
-           shade = 185, distort = list())
+           shade = 192, distort = list()),
+      # put in the feeder the wrong way over: back side scanned first
+      list(version = "3", zid = "9246810", answers = c("D", "B", "D", "C", "D", "C"),
+           distort = list(dx_mm = 0.5), back_first = TRUE)
     )
     jpgs <- unlist(lapply(seq_along(sheets), function(i) {
       s <- sheets[[i]]
-      make_sheet(forms, cfg, s$version, s$zid, s$answers, work, i,
-                 shade = s$shade %||% 40, distort = s$distort,
-                 upside_down = isTRUE(s$upside_down))
+      p <- make_sheet(forms, cfg, s$version, s$zid, s$answers, work, i,
+                      shade = s$shade %||% 40, distort = s$distort,
+                      upside_down = isTRUE(s$upside_down))
+      if (isTRUE(s$back_first)) rev(p) else p
     }))
     pdf <- write_scan_pdf(jpgs, file.path(work, "scan.pdf"))
     run <- run_pipeline(pdf, cfg, forms, file.path(forms, "answer_key.csv"))
@@ -77,7 +81,7 @@ test_that("double marks and blanks are flagged, never guessed", {
   expect_true(run$sheets$needs_review[4])
   expect_match(run$sheets$q2[4], "\\*$")          # recorded as uncertain
   expect_true(is.na(run$sheets$q5[4]) || run$sheets$q5[4] == "")
-  expect_match(run$sheets$notes[4], "Q2 ambiguous")
+  expect_match(run$sheets$notes[4], "Q2 two marks")
   expect_match(run$sheets$notes[4], "Q5 blank")
   # The questions around them are still read.
   expect_equal(run$sheets$q1[4], "E")
@@ -100,4 +104,13 @@ test_that("scores follow the version-specific key", {
   run <- synthetic_run()
   # Sheets 1-3 are answered exactly to their version's key.
   expect_equal(run$results$score[1:3], c(6, 6, 6))
+})
+
+test_that("a sheet scanned back side first is read, and flagged to confirm", {
+  run <- synthetic_run()
+  t <- run$truth[[7]]
+  expect_equal(run$sheets$zid[7], paste0("z", t$zid))
+  expect_equal(answers_string(run$sheets, run$cfg)[7], paste(t$answers, collapse = ""))
+  expect_true(run$sheets$needs_review[7])
+  expect_match(run$sheets$notes[7], "back side first")
 })

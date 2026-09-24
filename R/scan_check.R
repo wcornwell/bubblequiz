@@ -74,7 +74,13 @@ qr_corner_crop <- function(img, corner) {
 QR_ENHANCERS <- list(
   as_is = function(img) img,
   x4_threshold = function(img) binarise(magick::image_resize(img, "400%"), "50%"),
-  x3_threshold = function(img) binarise(magick::image_resize(img, "300%"), "55%")
+  x3_threshold = function(img) binarise(magick::image_resize(img, "300%"), "55%"),
+  # Darker cut-offs recover a QR whose printing is faded or smudged; lighter
+  # ones a QR printed heavy. QR error correction means a variant either reads
+  # the true payload or reads nothing.
+  x4_dark = function(img) binarise(magick::image_resize(img, "400%"), "40%"),
+  x3_dark = function(img) binarise(magick::image_resize(img, "300%"), "45%"),
+  x2_light = function(img) binarise(magick::image_resize(img, "200%"), "60%")
 )
 
 binarise <- function(img, level) {
@@ -137,11 +143,38 @@ page_reading <- function(payloads) {
 # Anything else is flagged at the page where it went wrong and the walk resumes
 # at the next page reading page 1, so one feeder error does not cascade through
 # the rest of the stack.
+#
+# For a two-page form one more fact is available: a duplex scanner emits each
+# physical sheet as stack positions (1,2), (3,4), ... Two recoveries rest on
+# that, and only apply at those positions:
+#   - a sheet fed back side first reads 2,1; it is paired, in page order.
+#   - a side whose QR cannot be read takes its version and page number from
+#     the other side of the same paper.
+# Both are reported in `status` (prefixed "ok:") so the sheet can be checked
+# by a person; neither ever joins pages across two physical sheets.
 sequence_walk <- function(page_no, pages, version, note = NULL) {
   n <- length(page_no)
   if (is.null(note)) note <- rep("", n)
   sheet  <- rep(NA_integer_, n)
   status <- rep(NA_character_, n)
+  recovered <- rep("", n)
+
+  duplex_pairs <- length(stats::na.omit(pages)) > 0 && all(stats::na.omit(pages) == 2L)
+  if (duplex_pairs && n >= 2L) {
+    for (a in seq(1L, n - 1L, by = 2L)) {
+      b <- a + 1L
+      if (is.na(page_no[a]) != is.na(page_no[b])) {
+        known <- if (is.na(page_no[a])) b else a
+        lost  <- if (known == a) b else a
+        if (!is.na(version[known]) && page_no[known] %in% 1:2) {
+          page_no[lost] <- 3L - page_no[known]
+          version[lost] <- version[known]
+          pages[lost]   <- 2L
+          recovered[lost] <- "QR unreadable; identified from the other side of the sheet"
+        }
+      }
+    }
+  }
 
   i <- 1L
   sheet_id <- 0L
@@ -149,6 +182,15 @@ sequence_walk <- function(page_no, pages, version, note = NULL) {
     if (is.na(page_no[i])) {
       status[i] <- if (nzchar(note[i])) note[i] else "unreadable QR"
       i <- i + 1L
+      next
+    }
+    if (duplex_pairs && i %% 2L == 1L && i < n && identical(page_no[i], 2L) &&
+        identical(page_no[i + 1L], 1L) && !is.na(version[i]) &&
+        identical(version[i], version[i + 1L])) {
+      sheet_id <- sheet_id + 1L
+      sheet[i:(i + 1L)] <- sheet_id
+      status[i:(i + 1L)] <- "ok: sheet scanned back side first"
+      i <- i + 2L
       next
     }
     if (page_no[i] != 1L) {
@@ -172,7 +214,7 @@ sequence_walk <- function(page_no, pages, version, note = NULL) {
     sheet_id <- sheet_id + 1L
     if (ok) {
       sheet[idx] <- sheet_id
-      status[idx] <- "ok"
+      status[idx] <- ifelse(nzchar(recovered[idx]), paste0("ok: ", recovered[idx]), "ok")
       i <- i + len
     } else {
       why <- if (length(idx) != len) {
@@ -188,7 +230,7 @@ sequence_walk <- function(page_no, pages, version, note = NULL) {
       i <- i + 1L
     }
   }
-  list(sheet = sheet, status = status)
+  list(sheet = sheet, status = status, page_no = page_no, version = version)
 }
 
 #' Validate the page sequence of a scanned stack
@@ -225,8 +267,10 @@ check_scan_sequence <- function(scans, output = file.path(scans, "scan_sequence.
 
   n <- length(imgs)
   walk <- sequence_walk(page_no, pages, version, note)
-  sheet  <- walk$sheet
-  status <- walk$status
+  sheet   <- walk$sheet
+  status  <- walk$status
+  page_no <- walk$page_no
+  version <- walk$version
 
   df <- data.frame(
     page_index = seq_len(n),
@@ -242,10 +286,18 @@ check_scan_sequence <- function(scans, output = file.path(scans, "scan_sequence.
   dir.create(dirname(output), showWarnings = FALSE, recursive = TRUE)
   utils::write.csv(df, output, row.names = FALSE)
 
-  bad <- df[df$status != "ok", , drop = FALSE]
+  bad <- df[!startsWith(df$status, "ok"), , drop = FALSE]
+  noted <- df[startsWith(df$status, "ok:"), , drop = FALSE]
   n_sheets <- length(unique(stats::na.omit(df$sheet)))
   message("\nPages:  ", n)
   message("Sheets: ", n_sheets, " complete")
+  if (nrow(noted) > 0) {
+    message("Recovered (sheets flagged for review): ", nrow(noted), " page(s)")
+    for (r in seq_len(nrow(noted))) {
+      message(sprintf("  page %-4d %-22s %s",
+                      noted$page_index[r], noted$file[r], sub("^ok: ", "", noted$status[r])))
+    }
+  }
   if (nrow(bad) == 0) {
     message("Sequence is clean; every page belongs to a complete sheet.")
   } else {
