@@ -8,7 +8,9 @@
 # number and the sheet length. This file reads those and reports exactly where
 # the stack stops making sense.
 
-# Decode every QR on one page image. Returns a character vector of payloads.
+# Decode every QR on one page image. Returns a character vector of payloads,
+# with a `corner` attribute naming the corner crop that found them (NA when the
+# whole page decoded directly).
 decode_qr_all <- function(img_path) {
   if (Sys.which("zbarimg") == "") {
     stop("zbarimg was not found on PATH. Install zbar to validate a scan stack.",
@@ -24,20 +26,77 @@ decode_qr_all <- function(img_path) {
   }
 
   found <- run(img_path)
-  if (length(found) > 0) return(found)
+  if (length(found) > 0) return(structure(found, corner = NA_character_))
 
-  # A QR that is small relative to the scan resolution can fall below the
-  # decoder's threshold. Retry once on an upscaled, sharpened copy before
-  # reporting the page as unreadable.
+  # The page QR is small against the whole page, and at scan resolution its
+  # modules are only two or three pixels wide; zbar misses it among everything
+  # else on the page. Cropping to one corner and enlarging it decodes reliably.
+  # The corner it turns up in is recorded, because a QR in the top-left means
+  # the sheet went through the feeder upside down.
+  img <- tryCatch(magick::image_read(img_path), error = function(e) NULL)
+  if (is.null(img)) return(character(0))
+  for (corner in names(QR_CORNERS)) {
+    found <- decode_corner(img, corner, run)
+    if (length(found) > 0) return(structure(found, corner = corner))
+  }
+
+  # Last resort: the whole page enlarged and sharpened.
+  big <- magick::image_resize(img, geometry = "200%")
+  big <- magick::image_convert(magick::image_contrast(big), colorspace = "gray")
+  found <- run_image(big, run)
+  if (length(found) > 0) return(structure(found, corner = NA_character_))
+  character(0)
+}
+
+# Page-fraction boxes (x1, y1, x2, y2) searched for the page QR, most likely
+# first. The QR is printed bottom-right; top-left is where it lands on a sheet
+# scanned upside down.
+QR_CORNERS <- list(
+  br = c(0.70, 0.78, 1.00, 1.00),
+  tl = c(0.00, 0.00, 0.30, 0.22),
+  bl = c(0.00, 0.78, 0.30, 1.00),
+  tr = c(0.70, 0.00, 1.00, 0.22)
+)
+
+qr_corner_crop <- function(img, corner) {
+  box <- QR_CORNERS[[corner]]
+  info <- magick::image_info(img)
+  x1 <- as.integer(box[1] * info$width);  y1 <- as.integer(box[2] * info$height)
+  x2 <- as.integer(box[3] * info$width);  y2 <- as.integer(box[4] * info$height)
+  crop <- magick::image_crop(img, sprintf("%dx%d+%d+%d", x2 - x1, y2 - y1, x1, y1))
+  magick::image_convert(crop, colorspace = "gray")
+}
+
+# Ways of presenting a corner crop to zbar, tried in order. At 150-200 dpi a QR
+# module is two or three pixels wide and blurred by JPEG; a smooth enlargement
+# followed by a hard threshold rebuilds clean module edges. Nearest-neighbour
+# enlargement does not: it keeps the blur and decodes almost nothing.
+QR_ENHANCERS <- list(
+  as_is = function(img) img,
+  x4_threshold = function(img) binarise(magick::image_resize(img, "400%"), "50%"),
+  x3_threshold = function(img) binarise(magick::image_resize(img, "300%"), "55%")
+)
+
+binarise <- function(img, level) {
+  img <- magick::image_threshold(img, type = "white", threshold = level)
+  magick::image_threshold(img, type = "black", threshold = level)
+}
+
+# Decode a corner crop, trying each enhancement in turn.
+decode_corner <- function(img, corner, run) {
+  crop <- qr_corner_crop(img, corner)
+  for (enh in QR_ENHANCERS) {
+    found <- run_image(enh(crop), run)
+    if (length(found) > 0) return(found)
+  }
+  character(0)
+}
+
+run_image <- function(img, run) {
   tmp <- tempfile(fileext = ".png")
   on.exit(unlink(tmp), add = TRUE)
-  ok <- tryCatch({
-    img <- magick::image_read(img_path)
-    img <- magick::image_resize(img, geometry = "200%")
-    img <- magick::image_convert(magick::image_contrast(img), colorspace = "gray")
-    magick::image_write(img, tmp, format = "png")
-    TRUE
-  }, error = function(e) FALSE)
+  ok <- tryCatch({ magick::image_write(img, tmp, format = "png"); TRUE },
+                 error = function(e) FALSE)
   if (!ok) return(character(0))
   run(tmp)
 }

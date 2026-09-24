@@ -48,7 +48,7 @@ Common options:
   --openai-model <id> OpenAI quiz model          [default: gpt-5]
   --transcribe-model  OpenAI transcription model [default: gpt-4o-mini-transcribe]
   --youtube-lang <id> YouTube caption language   [default: en]
-  --dpi <n>           Scan rasterisation DPI    [default: 150]
+  --dpi <n>           Scan rasterisation DPI    [default: 200]
   --dry-run           Mark only the first 3 pending pages
   --force             Re-extract scans over an existing folder
 
@@ -186,7 +186,7 @@ bq_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
     "preprocess" = {
       if (length(pos) == 0) stop("Usage: bubblequiz preprocess <scan.pdf>", call. = FALSE)
       preprocess_scans(pos[1], config,
-                       dpi   = as.integer(o$dpi %||% 150),
+                       dpi   = as.integer(o$dpi %||% 200),
                        force = isTRUE(o$force))
     },
 
