@@ -145,7 +145,9 @@ score_results <- function(dir,
         next
       }
 
-      idx_file <- if (has_file) which(vapply(row_files, function(f) file_key %in% f, logical(1))) else integer(0)
+      idx_file <- if (has_file) {
+        which(vapply(row_files, function(f) basename(file_key) %in% basename(f), logical(1)))
+      } else integer(0)
       idx_zid  <- if (has_zid)  which(as.character(progress$zid) == zid_key)  else integer(0)
 
       idx <- integer(0)
@@ -282,7 +284,8 @@ score_results <- function(dir,
   }
 
   review_cols <- function(student) {
-    data.frame(needs_review = isTRUE(student$needs_review),
+    data.frame(files        = as.character(student$files %||% basename(student$file)),
+               needs_review = isTRUE(student$needs_review),
                reviewed     = isTRUE(student$reviewed),
                notes        = as.character(student$notes %||% NA_character_),
                stringsAsFactors = FALSE)

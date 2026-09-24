@@ -93,8 +93,10 @@ aggregate_sheets <- function(dir,
                                 nrow(pg), expected_pages))
     }
 
-    page_notes <- stats::na.omit(as.character(pg$notes))
-    page_notes <- page_notes[nzchar(page_notes)]
+    # Split each page's notes and keep one copy of each: a note that applies
+    # to the whole sheet (e.g. scanned back side first) is on every page.
+    page_notes <- unlist(strsplit(stats::na.omit(as.character(pg$notes)), " | ", fixed = TRUE))
+    page_notes <- unique(page_notes[nzchar(page_notes)])
 
     row <- data.frame(
       sheet        = sh,

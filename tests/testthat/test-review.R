@@ -66,8 +66,10 @@ test_that("overriding the uncertain answer clears the sheet", {
   expect_equal(r$score[2], 4)   # v2 key: C A A D
 })
 
-test_that("any page of a sheet identifies it", {
+test_that("any page of a sheet identifies it, with or without its folder", {
   r <- score(review_dir(ov_row(file = "page_0004.png", question = "2", response = "A")))
+  expect_false(r$needs_review[2])
+  r <- score(review_dir(ov_row(file = "pages/page_0004.png", question = "2", response = "A")))
   expect_false(r$needs_review[2])
 })
 
@@ -133,6 +135,7 @@ test_that("only clean or reviewed sheets are exported", {
   expect_equal(up[["Week 2 quiz"]], c(4, 4))
   held <- utils::read.csv(sub("[.]csv$", "_to_review.csv", out))
   expect_equal(held$zid, "z33?3333")
+  expect_equal(held$files, "page_0005.png;page_0006.png")  # every page, as overrides name them
   expect_match(held$reason, "zID")
 })
 

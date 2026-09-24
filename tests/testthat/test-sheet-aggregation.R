@@ -96,3 +96,12 @@ test_that("missing question columns are an error, not a silent NA", {
   expect_error(suppressMessages(aggregate_sheets(dir, config = cfg)),
                "missing question column")
 })
+
+test_that("a note on every page of a sheet appears once", {
+  p <- two_page_progress()
+  p$notes <- c("sheet scanned back side first", "sheet scanned back side first | Q3 blank",
+               NA, NA)
+  dir <- scan_dir_with(p)
+  out <- suppressMessages(aggregate_sheets(dir, config = test_config()))
+  expect_equal(out$notes[1], "sheet scanned back side first | Q3 blank")
+})

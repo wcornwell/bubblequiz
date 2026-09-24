@@ -74,8 +74,8 @@ export_moodle <- function(dirs,
   names(upload)[2] <- grade_item
   upload <- upload[order(upload$Username), , drop = FALSE]
 
-  files_col <- if ("files" %in% names(all)) all$files else all$file
-  held <- data.frame(scan = all$scan, files = files_col %||% all$file, zid = all$zid,
+  files_col <- if ("files" %in% names(all)) all$files else basename(all$file)
+  held <- data.frame(scan = all$scan, files = files_col, zid = all$zid,
                      version = all$exam_version, provisional = value, reason = why,
                      stringsAsFactors = FALSE)[!ok, , drop = FALSE]
 
