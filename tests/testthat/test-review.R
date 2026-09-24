@@ -123,28 +123,114 @@ test_that("preprocessing again keeps the reviewer's overrides", {
   expect_equal(nrow(utils::read.csv(ov)), 1)
 })
 
+export <- function(dirs, out, ...) {
+  suppressMessages(export_moodle(dirs, out, config = test_config(), ...))
+}
+review_of <- function(out) {
+  utils::read.csv(sub("[.]csv$", "_to_review.csv", out), colClasses = "character",
+                  check.names = FALSE)
+}
+
 test_that("only clean or reviewed sheets are exported", {
   dir <- review_dir(ov_row(file = "page_0003.png", question = "2", response = "A"))
   score(dir)
   out <- file.path(dir, "moodle.csv")
-  res <- suppressMessages(export_moodle(dir, out, grade_item = "Week 2 quiz",
-                                        config = test_config()))
+  export(dir, out, grade_item = "Week 2 quiz")
   up <- utils::read.csv(out, check.names = FALSE)
   expect_equal(names(up), c("Username", "Week 2 quiz"))
   expect_equal(up$Username, c("z1111111", "z2222222"))
   expect_equal(up[["Week 2 quiz"]], c(4, 4))
-  held <- utils::read.csv(sub("[.]csv$", "_to_review.csv", out))
-  expect_equal(held$zid, "z33?3333")
-  expect_equal(held$files, "page_0005.png;page_0006.png")  # every page, as overrides name them
-  expect_match(held$reason, "zID")
+  rv <- review_of(out)
+  expect_equal(rv$zid, c("z2222222", "z33?3333"))
+  expect_equal(rv$status, c("resolved", "open"))
+  expect_equal(rv$files[2], "page_0005.png;page_0006.png")  # every page, as overrides name them
+  expect_equal(rv$answers[2], "A B C D")
+  expect_match(rv$reason[2], "zID")
+})
+
+test_that("decisions written in the review file are applied", {
+  dir <- review_dir()
+  out <- file.path(dir, "moodle.csv")
+  score(dir); export(dir, out)
+  rv <- review_of(out)
+  expect_equal(rv$status, c("open", "open"))
+  rv$correct_answers[1] <- "Q2=A"
+  rv$correct_zid[2] <- "3333333"          # prefix optional
+  rv$comment <- c("B crossed out", "digit 3 read from handwriting")
+  utils::write.csv(rv, sub("[.]csv$", "_to_review.csv", out), row.names = FALSE)
+
+  r <- utils::capture.output(res <- suppressMessages(score_results(
+    dir, key = file.path(dir, "key.csv"), config = test_config(),
+    review = sub("[.]csv$", "_to_review.csv", out))))
+  export(dir, out)
+  up <- utils::read.csv(out)
+  expect_equal(up$Username, c("z1111111", "z2222222", "z3333333"))
+  rv <- review_of(out)
+  expect_equal(rv$status, c("resolved", "resolved"))
+  expect_equal(rv$comment, c("B crossed out", "digit 3 read from handwriting"))
+  expect_equal(rv$zid[2], "z3333333")
+})
+
+test_that("a re-run never drops the reviewer's rows, decisions or own columns", {
+  dir <- review_dir()
+  out <- file.path(dir, "moodle.csv")
+  score(dir); export(dir, out)
+  rv <- review_of(out)
+  rv$`manual comments` <- c("looked at this", "")
+  rv$comment[2] <- "ask the student"
+  utils::write.csv(rv, sub("[.]csv$", "_to_review.csv", out), row.names = FALSE)
+  export(dir, out); export(dir, out)
+  rv2 <- review_of(out)
+  expect_equal(nrow(rv2), 2)
+  expect_equal(rv2$`manual comments`, c("looked at this", ""))
+  expect_equal(rv2$comment[2], "ask the student")
+})
+
+test_that("resolved = yes signs off a sheet that needs no change", {
+  dir <- review_dir()
+  s <- utils::read.csv(file.path(dir, "sheets.csv"))
+  s$needs_review[1] <- TRUE; s$notes[1] <- "sheet scanned back side first"
+  utils::write.csv(s, file.path(dir, "sheets.csv"), row.names = FALSE)
+  out <- file.path(dir, "moodle.csv")
+  score(dir); export(dir, out)
+  rv <- review_of(out)
+  rv$resolved[rv$zid == "z1111111"] <- "yes"
+  review <- sub("[.]csv$", "_to_review.csv", out)
+  utils::write.csv(rv, review, row.names = FALSE)
+  utils::capture.output(suppressMessages(score_results(dir, key = file.path(dir, "key.csv"),
+                                                       config = test_config(), review = review)))
+  expect_true("z1111111" %in% export(dir, out)$upload$Username)
+})
+
+test_that("a malformed decision stops the run and names the row", {
+  dir <- review_dir()
+  out <- file.path(dir, "moodle.csv")
+  score(dir); export(dir, out)
+  review <- sub("[.]csv$", "_to_review.csv", out)
+  rv <- review_of(out)
+  for (bad in list(c(correct_answers = "Q2 is A"), c(correct_answers = "Q9=A"),
+                   c(correct_answers = "Q2=Z"), c(correct_zid = "z12"),
+                   c(resolved = "maybe"))) {
+    x <- rv; x[[names(bad)]][1] <- bad[[1]]
+    utils::write.csv(x, review, row.names = FALSE)
+    expect_error(score_results(dir, key = file.path(dir, "key.csv"),
+                               config = test_config(), review = review), "review file row 2")
+  }
+})
+
+test_that("export warns when decisions have not been scored yet", {
+  dir <- review_dir()
+  out <- file.path(dir, "moodle.csv")
+  score(dir); export(dir, out)
+  rv <- review_of(out); rv$correct_answers[1] <- "Q2=A"
+  utils::write.csv(rv, sub("[.]csv$", "_to_review.csv", out), row.names = FALSE)
+  expect_warning(export(dir, out), "not in the scores yet")
 })
 
 test_that("export refuses a zID that appears on two sheets", {
   dir <- review_dir(ov_row(file = "page_0005.png", question = "zid", response = "z1111111"))
   score(dir)
-  expect_error(suppressMessages(export_moodle(dir, file.path(dir, "m.csv"),
-                                              config = test_config())),
-               "more than one sheet")
+  expect_error(export(dir, file.path(dir, "m.csv")), "more than one sheet")
   expect_false(file.exists(file.path(dir, "m.csv")))
 })
 
@@ -154,7 +240,21 @@ test_that("export combines several scan folders", {
   s$zid <- c("z4444444", "z5555555", "z6666666")
   utils::write.csv(s, file.path(b, "sheets.csv"), row.names = FALSE)
   score(a); score(b)
-  res <- suppressMessages(export_moodle(c(a, b), file.path(a, "m.csv"), config = test_config()))
+  res <- export(c(a, b), file.path(a, "m.csv"))
   expect_equal(sort(res$upload$Username), c("z1111111", "z4444444"))
   expect_equal(nrow(res$review), 4)
+})
+
+test_that("review decisions work alongside an empty old-style overrides.csv", {
+  # Scan folders made before overrides.csv had a `file` column.
+  dir <- review_dir()
+  writeLines("page,zid,name,question,response", file.path(dir, "overrides.csv"))
+  out <- file.path(dir, "moodle.csv")
+  score(dir); export(dir, out)
+  rv <- review_of(out); rv$correct_answers[1] <- "Q2=A"
+  review <- sub("[.]csv$", "_to_review.csv", out)
+  utils::write.csv(rv, review, row.names = FALSE)
+  utils::capture.output(r <- suppressMessages(score_results(
+    dir, key = file.path(dir, "key.csv"), config = test_config(), review = review)))
+  expect_false(r$needs_review[2])
 })

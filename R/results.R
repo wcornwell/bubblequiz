@@ -24,12 +24,15 @@
 #' @param key Path to `answer_key.csv` from [generate_versions()].
 #' @param config Path to the exam config YAML, or a loaded config list.
 #' @param output Output CSV path; defaults to `results.csv` inside `dir`.
+#' @param review The quiz's review file (see [export_moodle()]); decisions in it
+#'   for sheets in this scan folder are applied as overrides.
 #' @return Invisibly, the results data frame.
 #' @export
 score_results <- function(dir,
                           key    = "output/answer_key.csv",
                           config = default_config_path(),
-                          output = NULL) {
+                          output = NULL,
+                          review = NULL) {
   if (!dir.exists(dir)) stop("Directory not found: ", dir, call. = FALSE)
   cfg <- if (is.list(config)) config else load_exam_config(config)
 
@@ -93,9 +96,29 @@ score_results <- function(dir,
   }
 
 
+  overrides <- NULL
   if (file.exists(overrides_path)) {
     message("Reading overrides:    ", overrides_path)
-    overrides <- readr::read_csv(overrides_path, show_col_types = FALSE)
+    overrides <- utils::read.csv(overrides_path, colClasses = "character")
+  }
+  # Decisions entered in the quiz's review file (see export_moodle()) for the
+  # sheets in this scan folder are applied exactly like overrides.csv rows.
+  if (!is.null(review) && file.exists(review)) {
+    from_review <- review_decisions(review, basename(normalizePath(dir)), cfg)
+    if (nrow(from_review)) {
+      message("Review decisions:     ", nrow(from_review), " from ", review)
+      if (is.null(overrides)) {
+        overrides <- from_review
+      } else {
+        for (col in setdiff(names(from_review), names(overrides))) {
+          overrides[[col]] <- rep(NA_character_, nrow(overrides))
+        }
+        overrides <- rbind(overrides[, names(from_review), drop = FALSE], from_review)
+      }
+    }
+  }
+
+  if (!is.null(overrides) && nrow(overrides) > 0) {
     required_cols <- c("page", "zid", "name", "question", "response")
     has_override_file_col <- "file" %in% names(overrides)
 
@@ -283,8 +306,16 @@ score_results <- function(dir,
       sum(bad_versions, na.rm = TRUE)), call. = FALSE)
   }
 
+  # The answers as read (after overrides), e.g. "C A B C E* -": what a reviewer
+  # compares against the paper. "-" is unanswered; "*" marks an uncertain read.
+  answers_read <- function(student) {
+    a <- vapply(q_col_names, function(qc) as.character(student[[qc]]), character(1))
+    paste(ifelse(is.na(a) | !nzchar(a), "-", a), collapse = " ")
+  }
+
   review_cols <- function(student) {
-    data.frame(files        = as.character(student$files %||% basename(student$file)),
+    data.frame(answers      = answers_read(student),
+               files        = as.character(student$files %||% basename(student$file)),
                needs_review = isTRUE(student$needs_review),
                reviewed     = isTRUE(student$reviewed),
                notes        = as.character(student$notes %||% NA_character_),

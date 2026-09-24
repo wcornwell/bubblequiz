@@ -235,44 +235,53 @@ needs rescanning.
 
 ## Mark And Score
 
-Place the scan PDF in the course folder, for example:
+For each quiz, put every scan PDF in one folder and run:
 
-```text
-scans.pdf
+```r
+mark_quiz("week2_scans", config = "exam.yml", forms = "output",
+          grade_item = "Week 2 quiz")
 ```
 
-Then run:
+That renders, checks, marks and scores every scan in the folder, and writes:
+
+```text
+week2_scans/moodle_import.csv   Username + grade: clean and resolved sheets only
+week2_scans/review.csv          every sheet that needs a person, and your decisions
+```
+
+Work through `review.csv`, run `mark_quiz()` again (scans already marked are
+not marked again, so it takes seconds), and upload `moodle_import.csv` once
+nothing is left open. In Moodle: Grades > Import > CSV file; map `Username` to
+"username" and the grade column to the grade item. Rendering needs `pdftoppm`
+(poppler) and QR reading needs `zbarimg` (zbar) on the PATH.
+
+The steps `mark_quiz()` runs, for use one at a time:
 
 ```r
 preprocess_scans("scans.pdf", "exam.yml", force = TRUE)
 check_scan_sequence("scans")
 mark_scans_cv("scans", config = "exam.yml", layout = "output/layout.R")
 aggregate_sheets("scans", config = "exam.yml")
-score_results("scans", key = "output/answer_key.csv", config = "exam.yml")
-export_moodle("scans", output = "moodle_import.csv", grade_item = "Week 2 quiz",
-              config = "exam.yml")
+score_results("scans", key = "output/answer_key.csv", config = "exam.yml",
+              review = "review.csv")
+export_moodle("scans", output = "moodle_import.csv", review = "review.csv",
+              grade_item = "Week 2 quiz", config = "exam.yml")
 ```
 
-`export_moodle()` takes several scan folders at once, for a class scanned in
-batches. Rendering needs `pdftoppm` (poppler) and QR reading needs `zbarimg`
-(zbar) on the PATH.
-
-Outputs:
+Per scan folder:
 
 ```text
 scans/scan_sequence.csv   one row per page: version, page number, sheet
 scans/progress.csv        one row per page, as read by the marker
 scans/marked-cv/          each page with the recorded answers drawn on
 scans/sheets.csv          one row per student, pages joined
-scans/results.csv         scores, with needs_review and notes
-moodle_import.csv         Username + grade, clean and reviewed sheets only
-moodle_import_to_review.csv   every sheet left out, with its pages and why
+scans/results.csv         scores, with needs_review, notes and answers as read
 ```
 
 ### Reviewing Flagged Sheets
 
-The marker never guesses. A sheet is flagged (`needs_review`, with the reason
-in `notes`) when anything on it was not read cleanly:
+The marker never guesses. A sheet is flagged when anything on it was not read
+cleanly, and `review.csv` says why:
 
 ```text
 two marks          two bubbles filled in one row -- usually a correction;
@@ -284,21 +293,25 @@ QR unreadable      version taken from the other side of the sheet
 back side first    a sheet put through the scanner the wrong way over
 ```
 
-Open the page named in `moodle_import_to_review.csv`, decide, and add a row to
-`overrides.csv` in that scan folder:
+Each row shows what was read -- `zid`, and `answers` as one letter per
+question (`*` uncertain, `-` unanswered) -- and has four columns for you:
 
 ```text
-file,page,zid,name,question,response
-page_0036.png,,,,4,B          Q4 is B (the A was crossed out)
-page_0031.png,,,,zid,z5760126 correct the zID
-page_0047.png,,,,ok,          checked; nothing to change
+correct_zid       the right zID, if the one read is wrong or has a ?
+correct_answers   only the answers that change: Q5=A, or Q2=B; Q5=- (- = blank)
+resolved          yes, once checked -- needed only when nothing changes
+comment           free text, kept as written
 ```
 
-`file` can be any page of the sheet. Then re-run `score_results()` and
-`export_moodle()`. A sheet leaves the review list once it has an override row,
-but never while it still holds an uncertain answer (`B*`) or an invalid zID:
-those must be set explicitly. `overrides.csv` is never overwritten by
-`preprocess_scans()`, so re-running the pipeline keeps the review.
+A sheet goes into the upload once decided, but never while it still holds an
+uncertain answer (`B*`) or an invalid zID: those must be set explicitly. Rows
+are never dropped and your columns -- including any you add -- are never
+overwritten, so the file is the record of what was decided. A typo in a
+decision stops the run and names the row.
+
+Corrections can also go in `overrides.csv` in a scan folder
+(`file,page,zid,name,question,response`, with `question` a number, `zid` or
+`ok`); `preprocess_scans()` never overwrites it.
 
 For a single-page form, `check_scan_sequence()` and `aggregate_sheets()` are
 harmless no-ops: every page is its own sheet and `sheets.csv` matches
