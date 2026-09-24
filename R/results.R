@@ -16,8 +16,8 @@
 #' with columns `file`, `page`, `zid`, `name`, `question`, `response`. Identify
 #' the sheet by `file` (any page of it, e.g. `page_0036.png`) or by `zid`.
 #' `question` is a question number (`response` = the letter, or blank for
-#' unanswered), `zid` (`response` = the corrected zID), or `ok` (checked, no
-#' change needed). Any row for a sheet marks it reviewed; a sheet still needs
+#' unanswered), `zid` (`response` = the corrected zID), `ok` (checked, no
+#' change needed), or `exclude` (leave the sheet out, e.g. it was rescanned). Any row for a sheet marks it reviewed; a sheet still needs
 #' review while it holds an uncertain answer (`B*`) or an invalid zID.
 #'
 #' @param dir Folder created by [preprocess_scans()] and filled in by [mark_scans()].
@@ -85,6 +85,7 @@ score_results <- function(dir,
   if (!("notes" %in% names(progress))) progress$notes <- NA_character_
   progress$needs_review <- as.logical(progress$needs_review) %in% TRUE
   progress$reviewed <- FALSE
+  progress$excluded <- FALSE
   zid_pattern <- sprintf("^%s[0-9]{%d}$", cfg$id$prefix, as.integer(cfg$id$digits))
 
   # All the page files of each row, so an override can name any page of a
@@ -132,12 +133,13 @@ score_results <- function(dir,
     for (i in seq_len(nrow(overrides))) {
       ov <- overrides[i, ]
 
-      # `question` is a question number, or one of two keywords:
-      #   zid -- `response` is the corrected zID
-      #   ok  -- the sheet was checked and needs no change
+      # `question` is a question number, or one of three keywords:
+      #   zid     -- `response` is the corrected zID
+      #   ok      -- the sheet was checked and needs no change
+      #   exclude -- leave the sheet out entirely (e.g. rescanned, or spoiled)
       q_text <- tolower(trimws(as.character(ov$question)))
       q_raw <- suppressWarnings(as.integer(q_text))
-      kind <- if (identical(q_text, "zid")) "zid" else if (identical(q_text, "ok")) "ok" else "answer"
+      kind <- if (q_text %in% c("zid", "ok", "exclude")) q_text else "answer"
       if (kind == "answer" && (is.na(q_raw) || !q_raw %in% EXPECTED_QUESTIONS)) {
         warning(sprintf("Skipping override row %d: invalid question '%s'", i, ov$question))
         n_skipped <- n_skipped + 1L
@@ -207,6 +209,13 @@ score_results <- function(dir,
         idx <- idx_zid[1]
       }
 
+      if (kind == "exclude") {
+        progress$excluded[idx] <- TRUE
+        progress$reviewed[idx] <- TRUE
+        message(sprintf("Applied override row %d: file=%s excluded", i, as.character(progress$file[idx])))
+        n_applied <- n_applied + 1L
+        next
+      }
       if (kind == "ok") {
         progress$reviewed[idx] <- TRUE
         message(sprintf("Applied override row %d: file=%s zid=%s checked, no change",
@@ -273,8 +282,8 @@ score_results <- function(dir,
     any(grepl("\\*$", vapply(q_cols_all, function(qc) as.character(progress[[qc]][i]), character(1))))
   }, logical(1))
   bad_zid <- is.na(progress$zid) | !grepl(zid_pattern, as.character(progress$zid))
-  progress$needs_review <- (progress$needs_review & !progress$reviewed) |
-    unsure_answer | bad_zid
+  progress$needs_review <- ((progress$needs_review & !progress$reviewed) |
+    unsure_answer | bad_zid) & !progress$excluded
   still <- character(nrow(progress))
   still[unsure_answer & progress$reviewed] <- "reviewed, but an uncertain answer (*) still needs an override"
   still[bad_zid & progress$reviewed] <- "reviewed, but the zID is still not valid"
@@ -318,6 +327,7 @@ score_results <- function(dir,
                files        = as.character(student$files %||% basename(student$file)),
                needs_review = isTRUE(student$needs_review),
                reviewed     = isTRUE(student$reviewed),
+               excluded     = isTRUE(student$excluded),
                notes        = as.character(student$notes %||% NA_character_),
                stringsAsFactors = FALSE)
   }

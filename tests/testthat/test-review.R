@@ -258,3 +258,38 @@ test_that("review decisions work alongside an empty old-style overrides.csv", {
     dir, key = file.path(dir, "key.csv"), config = test_config(), review = review)))
   expect_false(r$needs_review[2])
 })
+
+test_that("resolved = exclude leaves a sheet out for good", {
+  dir <- review_dir()
+  out <- file.path(dir, "moodle.csv")
+  score(dir); export(dir, out)
+  review <- sub("[.]csv$", "_to_review.csv", out)
+  rv <- review_of(out); rv$resolved[rv$zid == "z33?3333"] <- "exclude"
+  utils::write.csv(rv, review, row.names = FALSE)
+  utils::capture.output(suppressMessages(score_results(dir, key = file.path(dir, "key.csv"),
+                                                       config = test_config(), review = review)))
+  res <- export(dir, out)
+  expect_false(any(grepl("\\?", res$upload$Username)))
+  expect_equal(review_of(out)$status[review_of(out)$zid == "z33?3333"], "excluded")
+})
+
+test_that("a review file saved from a stale copy is caught, and every version kept", {
+  dir <- review_dir()
+  out <- file.path(dir, "moodle.csv")
+  review <- sub("[.]csv$", "_to_review.csv", out)
+  score(dir); export(dir, out)
+  stale <- utils::read.csv(review, colClasses = "character", check.names = FALSE)  # opened now...
+  rv <- stale; rv$correct_answers[1] <- "Q2=A"
+  utils::write.csv(rv, review, row.names = FALSE)
+  utils::capture.output(suppressMessages(score_results(dir, key = file.path(dir, "key.csv"),
+                                                       config = test_config(), review = review)))
+  export(dir, out)                                   # ...the pipeline writes the decision back
+  stale$`manual comments` <- c("new note", "")
+  utils::write.csv(stale, review, row.names = FALSE)  # ...then the stale copy is saved over it
+  lost <- lost_decisions(review)
+  expect_equal(nrow(lost), 1)
+  expect_equal(lost$was, "Q2=A")
+  expect_warning(export(dir, out), "now empty")
+  hist <- list.files(file.path(dir, ".review_history"))
+  expect_gte(sum(grepl("_to_review_[0-9-]+[.]csv$", hist)), 2)
+})

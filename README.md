@@ -291,6 +291,9 @@ blank              an unanswered question, or an empty zID column
 ambiguous          two bubbles too close to call
 QR unreadable      version taken from the other side of the sheet
 back side first    a sheet put through the scanner the wrong way over
+out of register    the sheet went through skewed or shifted, so its printed
+                   text is not where it should be: nothing on that page is
+                   read (answers show *, the zID ?). Rescan it straight.
 ```
 
 Each row shows what was read -- `zid`, and `answers` as one letter per
@@ -299,15 +302,27 @@ question (`*` uncertain, `-` unanswered) -- and has four columns for you:
 ```text
 correct_zid       the right zID, if the one read is wrong or has a ?
 correct_answers   only the answers that change: Q5=A, or Q2=B; Q5=- (- = blank)
-resolved          yes, once checked -- needed only when nothing changes
+resolved          yes, once checked -- needed only when nothing changes;
+                  exclude to leave the sheet out for good (e.g. rescanned)
 comment           free text, kept as written
 ```
+
+To rescan crooked sheets, put the rescan in the quiz folder as its own PDF and
+run `mark_quiz()`: the rescanned sheets are marked in their own right. Then set
+`resolved = exclude` on the crooked originals.
 
 A sheet goes into the upload once decided, but never while it still holds an
 uncertain answer (`B*`) or an invalid zID: those must be set explicitly. Rows
 are never dropped and your columns -- including any you add -- are never
 overwritten, so the file is the record of what was decided. A typo in a
 decision stops the run and names the row.
+
+Every run keeps a dated copy of the review file in `.review_history/` next to
+it. If decisions that were in the file after the last run have since gone --
+typically a spreadsheet opened before that run and saved afterwards --
+`mark_quiz()` stops and lists them rather than quietly undoing them; restore
+them (the last version the pipeline wrote is kept too), or pass
+`accept_review = TRUE` if clearing them was deliberate.
 
 Corrections can also go in `overrides.csv` in a scan folder
 (`file,page,zid,name,question,response`, with `question` a number, `zid` or

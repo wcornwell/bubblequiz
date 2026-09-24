@@ -33,7 +33,13 @@ synthetic_run <- local({
            shade = 192, distort = list()),
       # put in the feeder the wrong way over: back side scanned first
       list(version = "3", zid = "9246810", answers = c("D", "B", "D", "C", "D", "C"),
-           distort = list(dx_mm = 0.5), back_first = TRUE)
+           distort = list(dx_mm = 0.5), back_first = TRUE),
+      # fed a little crooked: registered through the rotation and read
+      list(version = "4", zid = "9333444", answers = c("E", "A", "E", "D", "E", "D"),
+           distort = list(deg = 1.5, dx_mm = 1)),
+      # fed badly crooked, corners off the edge: read exactly or flagged
+      list(version = "1", zid = "9777888", answers = c("A", "C", "A", "B", "A", "B"),
+           distort = list(deg = 6, dx_mm = -4, dy_mm = -5))
     )
     jpgs <- unlist(lapply(seq_along(sheets), function(i) {
       s <- sheets[[i]]
@@ -113,4 +119,26 @@ test_that("a sheet scanned back side first is read, and flagged to confirm", {
   expect_equal(answers_string(run$sheets, run$cfg)[7], paste(t$answers, collapse = ""))
   expect_true(run$sheets$needs_review[7])
   expect_match(run$sheets$notes[7], "back side first")
+})
+
+test_that("a slightly crooked sheet is read exactly", {
+  run <- synthetic_run()
+  t <- run$truth[[8]]
+  expect_equal(run$sheets$zid[8], paste0("z", t$zid))
+  expect_equal(answers_string(run$sheets, run$cfg)[8], paste(t$answers, collapse = ""))
+  expect_false(run$sheets$needs_review[8])
+})
+
+test_that("a badly crooked sheet is never read wrong: exact, or flagged unread", {
+  run <- synthetic_run()
+  t <- run$truth[[9]]
+  if (isTRUE(run$sheets$needs_review[9])) {
+    expect_match(run$sheets$notes[9], "out of register")
+    got <- unlist(run$sheets[9, paste0("q", run$cfg$questions)])
+    # Nothing from an unregistered page is reported as a letter.
+    expect_false(any(grepl("^[A-E]$", got) & got != t$answers))
+  } else {
+    expect_equal(run$sheets$zid[9], paste0("z", t$zid))
+    expect_equal(answers_string(run$sheets, run$cfg)[9], paste(t$answers, collapse = ""))
+  }
 })

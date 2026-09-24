@@ -236,7 +236,7 @@ gray_matrix <- function(img) {
 # ---------------------------------------------------------------------------
 MARKER_SIZE_MM <- 5
 
-detect_corner_markers <- function(gray, w, h) {
+detect_corner_markers <- function(gray, w, h, fit_tol_mm = 2) {
   px_per_mm <- w / 210
   side <- MARKER_SIZE_MM * px_per_mm
   box <- max(3L, as.integer(round(side * 0.7)))
@@ -245,8 +245,10 @@ detect_corner_markers <- function(gray, w, h) {
   find_one <- function(ref_xy) {
     cx <- ref_xy["x"] * w
     cy <- ref_xy["y"] * h
-    # Search generously: scanners routinely shift the page by several mm.
-    r <- as.integer(18 * px_per_mm)
+    # Search generously: scanners routinely shift the page by several mm, and a
+    # skewed sheet moves its corners further. Solid-square detection and the
+    # consistency check below keep a wide window from picking up anything else.
+    r <- as.integer(25 * px_per_mm)
     x1 <- max(1L, as.integer(cx) - r); x2 <- min(w, as.integer(cx) + r)
     y1 <- max(1L, as.integer(cy) - r); y2 <- min(h, as.integer(cy) + r)
     dark <- gray[y1:y2, x1:x2, drop = FALSE] <= dark_level
@@ -268,16 +270,35 @@ detect_corner_markers <- function(gray, w, h) {
     hy <- y1 + hits[, "row"] - 1 + box / 2
     k <- which.min((hx - cx)^2 + (hy - cy)^2)
 
-    # Refine: centroid of the dark pixels within one marker-width of the hit.
+    # Refine within one marker-width of the hit.
     half <- as.integer(ceiling(side * 0.75))
     wx1 <- max(1L, as.integer(hx[k]) - half); wx2 <- min(w, as.integer(hx[k]) + half)
     wy1 <- max(1L, as.integer(hy[k]) - half); wy2 <- min(h, as.integer(hy[k]) + half)
-    idx <- which(gray[wy1:wy2, wx1:wx2, drop = FALSE] <= dark_level, arr.ind = TRUE)
-    # A marker cut off by the edge of the scan has a centroid that is not its
-    # centre. Too small a square means the fit cannot be trusted; failing here
-    # sends the page to review instead of reading every bubble slightly off.
-    if (nrow(idx) < 0.6 * side^2) return(c(x = NA_real_, y = NA_real_))
-    c(x = mean(wx1 + idx[, "col"] - 1), y = mean(wy1 + idx[, "row"] - 1))
+    win <- gray[wy1:wy2, wx1:wx2, drop = FALSE] <= dark_level
+    # A marker touching the edge of the scan is cut off, however much of it
+    # is left: its centre cannot be found.
+    if ((wx1 <= 2 && any(win[, 1])) || (wy1 <= 2 && any(win[1, ])) ||
+        (wx2 >= w - 1 && any(win[, ncol(win)])) || (wy2 >= h - 1 && any(win[nrow(win), ]))) {
+      return(c(x = NA_real_, y = NA_real_))
+    }
+    # Measure the solid core: the rows and columns that are at least half dark
+    # across a marker's width. A pen stroke touching the marker is too thin to
+    # count, so it neither stretches the square nor moves its centre.
+    rows <- which(rowSums(win) >= 0.5 * side)
+    cols <- which(colSums(win) >= 0.5 * side)
+    if (!length(rows) || !length(cols)) return(c(x = NA_real_, y = NA_real_))
+    # A marker is an isolated square with ~1.25 mm of paper around it inside
+    # this window. The end of a black banner or a block of print runs on to the
+    # window's edge.
+    if (min(rows) <= 1 || max(rows) >= nrow(win) || min(cols) <= 1 || max(cols) >= ncol(win)) {
+      return(c(x = NA_real_, y = NA_real_))
+    }
+    ext <- c(diff(range(cols)), diff(range(rows))) + 1
+    if (any(ext < 0.8 * side | ext > 1.35 * side)) return(c(x = NA_real_, y = NA_real_))
+    core <- win[rows, cols, drop = FALSE]
+    if (mean(core) < 0.85) return(c(x = NA_real_, y = NA_real_))
+    cxm <- wx1 - 1 + mean(range(cols)); cym <- wy1 - 1 + mean(range(rows))
+    c(x = cxm, y = cym)
   }
 
   pts <- t(vapply(seq_len(nrow(REG_MARKERS_REF)), function(i) {
@@ -287,11 +308,89 @@ detect_corner_markers <- function(gray, w, h) {
   rownames(pts) <- rownames(REG_MARKERS_REF)
   colnames(pts) <- c("x", "y")
 
-  # Basic geometry sanity checks before using these points.
-  if (any(!is.finite(pts))) return(NULL)
-  if (pts["tr", "x"] <= pts["tl", "x"] || pts["br", "x"] <= pts["bl", "x"]) return(NULL)
-  if (pts["bl", "y"] <= pts["tl", "y"] || pts["br", "y"] <= pts["tr", "y"]) return(NULL)
+  # The markers found must agree on one placement of the page. Printers and
+  # scanners stretch a page by slightly different amounts across and down
+  # (~96.9% x 96.0% on the Apeos); real four-marker pages agree to ~1 mm.
+  ok <- stats::complete.cases(pts)
+  src_mm <- cbind(REG_MARKERS_REF[, "x"] * 210, REG_MARKERS_REF[, "y"] * 297)
+  px_mm <- w / 210
+  # Leave-one-out: predict each marker from the others (affine from three,
+  # or shift-rotation-scale from two) and drop the one that disagrees most,
+  # while it disagrees by more than the tolerance. A least-squares fit of all
+  # of them would spread one bad marker's error over the good ones.
+  predict_from <- function(i, others) {
+    if (length(others) >= 3) {
+      M <- cbind(1, src_mm[others, , drop = FALSE])
+      coef <- qr.solve(M, pts[others, , drop = FALSE])
+      as.numeric(cbind(1, src_mm[i, , drop = FALSE]) %*% coef)
+    } else {
+      zr <- complex(real = src_mm[others, 1], imaginary = src_mm[others, 2])
+      zs <- complex(real = pts[others, 1], imaginary = pts[others, 2])
+      a <- (zs[2] - zs[1]) / (zr[2] - zr[1]); b <- zs[1] - a * zr[1]
+      z <- a * complex(real = src_mm[i, 1], imaginary = src_mm[i, 2]) + b
+      c(Re(z), Im(z))
+    }
+  }
+  # Three markers fit an affine exactly, so instead of prediction they are held
+  # to describing a plausible page: horizontal and vertical stretch within 3%
+  # of each other, and under a degree of shear. A banner or print block taken
+  # for a marker distorts the fit far beyond that.
+  plausible3 <- function(i) {
+    M <- cbind(1, src_mm[i, , drop = FALSE])
+    J <- qr.solve(M, pts[i, , drop = FALSE])[2:3, , drop = FALSE]   # rows: d/dx_mm, d/dy_mm
+    sx <- sqrt(sum(J[1, ]^2)); sy <- sqrt(sum(J[2, ]^2))
+    shear <- abs(asin(sum(J[1, ] * J[2, ]) / (sx * sy))) * 180 / pi
+    abs(sx / sy - 1) < 0.03 && shear < 1 && abs(sx / px_mm - 1) < 0.1
+  }
+  repeat {
+    i <- which(ok)
+    if (length(i) < 3) break
+    loo <- vapply(i, function(k) {
+      sqrt(sum((pts[k, ] - predict_from(k, setdiff(i, k)))^2))
+    }, numeric(1))
+    good <- if (length(i) == 4) max(loo) <= fit_tol_mm * px_mm else plausible3(i)
+    if (good) break
+    ok[i[which.max(loo)]] <- FALSE
+  }
+  zr_all <- complex(real = src_mm[, 1], imaginary = src_mm[, 2])
+  zs_all <- complex(real = pts[, "x"], imaginary = pts[, "y"])
+  if (sum(ok) == 2) {
+    i <- which(ok)
+    scale <- Mod(zs_all[i[2]] - zs_all[i[1]]) / (Mod(zr_all[i[2]] - zr_all[i[1]]) * px_mm)
+    if (abs(scale - 1) > 0.08) ok[i] <- FALSE
+  }
+  pts[!ok, ] <- NA_real_
+  if (sum(ok) < 2) return(NULL)
   pts
+}
+
+# fit_marker_map: map from template space (u, v) to scan pixels using however
+# many corner markers were found. Four give a bilinear fit (the original);
+# three an affine fit; two a similarity (shift, rotation, scale). A sheet fed
+# crooked can lose a corner off the edge of the scan; with fewer than four the
+# fit is rougher, and register_page() decides from the printed anchors whether
+# the page can be read at all.
+fit_marker_map <- function(pts) {
+  ok <- stats::complete.cases(pts)
+  src <- REG_MARKERS_REF[ok, , drop = FALSE]
+  dst <- pts[ok, , drop = FALSE]
+  if (sum(ok) == 4) return(fit_bilinear_map(src, dst))
+  if (sum(ok) == 3) {
+    M <- cbind(1, src[, "x"], src[, "y"])
+    ax <- solve(M, dst[, "x"]); ay <- solve(M, dst[, "y"])
+    return(map_result(function(u, v) {
+      list(x = ax[1] + ax[2] * u + ax[3] * v, y = ay[1] + ay[2] * u + ay[3] * v)
+    }))
+  }
+  # Two points: similarity in millimetre space, where the page is isotropic.
+  zr <- complex(real = src[, "x"] * 210, imaginary = src[, "y"] * 297)
+  zs <- complex(real = dst[, "x"], imaginary = dst[, "y"])
+  a <- (zs[2] - zs[1]) / (zr[2] - zr[1])
+  b <- zs[1] - a * zr[1]
+  map_result(function(u, v) {
+    z <- a * complex(real = u * 210, imaginary = v * 297) + b
+    list(x = Re(z), y = Im(z))
+  })
 }
 
 # ---------------------------------------------------------------------------
@@ -302,12 +401,19 @@ fit_bilinear_map <- function(src_uv, dst_xy) {
   M <- cbind(1, src_uv[, "x"], src_uv[, "y"], src_uv[, "x"] * src_uv[, "y"])
   ax <- as.numeric(solve(M, dst_xy[, "x"]))
   ay <- as.numeric(solve(M, dst_xy[, "y"]))
+  map_result(function(u, v) {
+    list(x = ax[1] + ax[2] * u + ax[3] * v + ax[4] * u * v,
+         y = ay[1] + ay[2] * u + ay[3] * v + ay[4] * u * v)
+  })
+}
 
+# map_result: wrap a vectorised (u, v) -> list(x, y) mapping so that a single
+# point returns c(x = , y = ) as the callers expect, and many points return a
+# two-column matrix.
+map_result <- function(f) {
   function(u, v) {
-    u <- as.numeric(u)
-    v <- as.numeric(v)
-    b <- c(1, u, v, u * v)
-    c(x = sum(ax * b), y = sum(ay * b))
+    r <- f(as.numeric(u), as.numeric(v))
+    if (length(r$x) == 1) c(x = r$x, y = r$y) else cbind(x = r$x, y = r$y)
   }
 }
 
@@ -328,12 +434,130 @@ build_map_xy <- function(img_path) {
     h          = h,
     gray       = gray,
     map_xy     = if (!is.null(marker_pts)) {
-      fit_bilinear_map(REG_MARKERS_REF, marker_pts)
+      fit_marker_map(marker_pts)
     } else {
-      function(u, v) c(x = as.numeric(u) * w, y = as.numeric(v) * h)
+      map_result(function(u, v) list(x = u * w, y = v * h))
     },
-    marker_ok  = !is.null(marker_pts)
+    marker_ok  = !is.null(marker_pts),
+    markers    = if (is.null(marker_pts)) 0L else sum(stats::complete.cases(marker_pts)),
+    marker_pts = marker_pts
   )
+}
+
+# page_angle: rotation of the page in the scan, in degrees (clockwise
+# positive), from the mapped direction of a horizontal line across it.
+page_angle <- function(map_xy) {
+  a <- map_xy(0.2, 0.5); b <- map_xy(0.8, 0.5)
+  atan2(b[["y"]] - a[["y"]], b[["x"]] - a[["x"]]) * 180 / pi
+}
+
+# registration_anchors: printed text on a page that is never written over,
+# used to check (and, when corner markers are lost, to fix) the registration:
+# every "Answer Qn" label, and on the front the "Fill zID digit bubbles:"
+# heading above the zID grid. One row per anchor: centre (u, v) and half-size
+# (hu, hv), as page fractions.
+registration_anchors <- function(cfg, layout, page_no) {
+  qs <- questions_on_page(cfg, layout, page_no)
+  rows <- lapply(qs, function(q) {
+    col <- layout$QUESTION_COL[[as.character(q)]]
+    x_a <- layout$ANSWER_X[[col]][[1]]
+    # "Answer Qn" runs from ~66 pt to ~15 pt left of the first bubble's centre.
+    c(u = x_a - 41 / PAGE_W, v = layout$QUESTION_Y[[as.character(q)]],
+      hu = 27 / PAGE_W, hv = 9 / PAGE_H)
+  })
+  heading <- zid_heading_box(form_pdf_for(layout), if (is.na(page_no)) 1L else page_no)
+  if (!is.null(heading)) rows <- c(rows, list(heading))
+  if (!length(rows)) return(matrix(numeric(0), ncol = 4, dimnames = list(NULL, c("u", "v", "hu", "hv"))))
+  do.call(rbind, rows)
+}
+
+# zid_heading_box: where "Fill zID digit bubbles:" is printed on a form page,
+# from the PDF's text layer, or NULL if the page has no such heading.
+zid_heading_box <- function(form_pdf, page) {
+  if (is.null(form_pdf) || !file.exists(form_pdf)) return(NULL)
+  txt <- pdftools::pdf_data(form_pdf)
+  if (page > length(txt)) return(NULL)
+  d <- txt[[page]]
+  i <- which(d$text == "Fill")
+  if (!length(i)) return(NULL)
+  line <- d[abs(d$y - d$y[i[1]]) < 2 & d$x >= d$x[i[1]], , drop = FALSE]
+  line <- line[order(line$x), , drop = FALSE]
+  line <- line[seq_len(min(nrow(line), 4)), , drop = FALSE]
+  x1 <- min(line$x); x2 <- max(line$x + line$width)
+  y1 <- min(line$y); y2 <- max(line$y + line$height)
+  c(u = (x1 + x2) / 2 / PAGE_W, v = (y1 + y2) / 2 / PAGE_H,
+    hu = (x2 - x1) / 2 / PAGE_W, hv = ((y2 - y1) / 2 + 2) / PAGE_H)
+}
+
+# registration_offsets: how far the mapped page is from where it should be, at
+# each anchor. The anchor area is sampled from the scan through the page
+# mapping -- so a rotated or stretched page is compared in the form's own
+# coordinates -- and slid against the same area of the blank form. The best
+# matching shift is the registration error there, in scan pixels; NA where the
+# anchor could not be located.
+registration_offsets <- function(ctx, blank_ctx, anchors, search = 8L) {
+  if (!nrow(anchors)) return(matrix(numeric(0), ncol = 2, dimnames = list(NULL, c("dx", "dy"))))
+  sample_gray <- function(g, xy) {
+    r <- round(xy[, "y"]); c <- round(xy[, "x"])
+    out <- rep(NA_real_, length(r))
+    ok <- r >= 1 & r <= nrow(g) & c >= 1 & c <= ncol(g)
+    out[ok] <- g[cbind(r[ok], c[ok])]
+    out
+  }
+  step <- max(1L, as.integer(search %/% 6L))
+  t(vapply(seq_len(nrow(anchors)), function(k) {
+    a <- anchors[k, ]
+    us <- seq(a[["u"]] - a[["hu"]], a[["u"]] + a[["hu"]], length.out = max(8L, as.integer(2 * a[["hu"]] * blank_ctx$w)))
+    vs <- seq(a[["v"]] - a[["hv"]], a[["v"]] + a[["hv"]], length.out = max(8L, as.integer(2 * a[["hv"]] * blank_ctx$h)))
+    uv <- expand.grid(u = us, v = vs)
+    tmpl <- sample_gray(blank_ctx$gray, blank_ctx$map_xy(uv$u, uv$v))
+    if (anyNA(tmpl) || stats::sd(tmpl) == 0) return(c(dx = NA_real_, dy = NA_real_))
+    tmpl <- tmpl - mean(tmpl)
+    at <- ctx$map_xy(uv$u, uv$v)
+    score <- function(dx, dy) {
+      p <- sample_gray(ctx$gray, at + matrix(c(dx, dy), nrow(at), 2, byrow = TRUE))
+      if (anyNA(p)) return(-Inf)
+      p <- p - mean(p)
+      r <- sum(tmpl * p) / sqrt(sum(tmpl^2) * sum(p^2))
+      if (is.finite(r)) r else -Inf
+    }
+    # Coarse grid over the whole window, then every pixel around the best.
+    best <- -Inf; found <- c(0, 0)
+    for (dy in seq(-search, search, by = step)) for (dx in seq(-search, search, by = step)) {
+      r <- score(dx, dy); if (r > best) { best <- r; found <- c(dx, dy) }
+    }
+    if (step > 1L) {
+      c0 <- found
+      for (dy in (c0[2] - step):(c0[2] + step)) for (dx in (c0[1] - step):(c0[1] + step)) {
+        r <- score(dx, dy); if (r > best) { best <- r; found <- c(dx, dy) }
+      }
+    }
+    # An anchor that matches nowhere well is not located, rather than
+    # "located" at whichever shift was least bad.
+    if (!is.finite(best) || best < 0.5) return(c(dx = NA_real_, dy = NA_real_))
+    c(dx = found[1], dy = found[2])
+  }, numeric(2)))
+}
+
+# register_page: map a scanned page onto its form, and check the result
+# against printed text (the anchors) before anything on it is read. Two or
+# three usable corner markers are enough to try -- a clipped corner is common
+# -- but the page only counts as registered if every anchor lands within
+# tolerance. A sheet fed badly skewed or shifted fails here and is flagged to
+# be rescanned straight; the marker does not try to recover it.
+register_page <- function(img_path, cfg, layout, page_no) {
+  ctx <- build_map_xy(img_path)
+  blank <- blank_form_ctx(form_pdf_for(layout), page_no, ctx$w)
+  anchors <- registration_anchors(cfg, layout, page_no)
+  scale <- ctx$w / 1654
+  off <- registration_offsets(ctx, blank, anchors, search = as.integer(round(8 * scale)))
+  err <- if (!nrow(off)) 0 else if (anyNA(off)) Inf else max(abs(off))
+  registered <- isTRUE(ctx$marker_ok) && err <= REGISTRATION_TOLERANCE_PX * scale
+  note <- if (registered) "" else paste0(
+    "page out of register (", if (is.finite(err)) sprintf("off by %.0f px", err) else "could not be located",
+    ", ", ctx$markers, " of 4 corner markers usable): fed skewed or shifted -- ",
+    "rescan it straight, or enter the answers by hand")
+  list(ctx = ctx, blank = blank, registered = registered, error = err, note = note)
 }
 
 # ---------------------------------------------------------------------------
@@ -620,9 +844,21 @@ questions_on_page <- function(cfg, layout, page_no) {
   cfg$questions[keep]
 }
 
-read_answers_cv <- function(img_path, cfg, layout, page_no = NA_integer_) {
-  ctx <- build_map_xy(img_path)
-  blank <- blank_form_ctx(form_pdf_for(layout), page_no, ctx$w)
+# Registration tolerance, in pixels at 200 dpi (scaled to the scan's width):
+# how far printed text may sit from where the mapping puts it. On 324 real
+# pages (Sept 2026), well-fed sheets measured at most 6 px (0.8 mm) -- print
+# distortion, largest near the bottom -- which bubble reading absorbs (answer
+# discs have ~10 px of room, zID discs ~8). The anchor search reaches 8 px, so
+# an anchor found only at the edge of it, or not at all, fails the page.
+REGISTRATION_TOLERANCE_PX <- 7
+
+read_answers_cv <- function(img_path, cfg, layout, page_no = NA_integer_, reg = NULL) {
+  if (is.null(reg)) reg <- register_page(img_path, cfg, layout, page_no)
+  ctx <- reg$ctx
+  blank <- reg$blank
+  registered <- reg$registered
+  reg_err <- reg$error
+  reg_note <- reg$note
   answers <- stats::setNames(vector("list", length(cfg$questions)),
                              as.character(cfg$questions))
   notes <- character(0)
@@ -662,8 +898,16 @@ read_answers_cv <- function(img_path, cfg, layout, page_no = NA_integer_) {
     if (nzchar(cls$note)) notes <- c(notes, sprintf("Q%s %s", q_chr, cls$note))
   }
 
+  if (!registered) {
+    # Nothing read from a page out of register is reported as a letter: every
+    # question printed on it becomes "*" (uncertain, no reading).
+    for (q in this_page) answers[[as.character(q)]] <- "*"
+    notes <- reg_note
+    uncertain <- TRUE
+  }
+
   list(answers = answers, notes = notes, inks = inks_by_q,
-       uncertain = uncertain, marker_ok = ctx$marker_ok)
+       uncertain = uncertain, marker_ok = registered, reg_error = reg_err)
 }
 
 load_id_grid_from_form <- function(form_pdf, cfg) {
@@ -686,13 +930,13 @@ load_id_grid_from_form <- function(form_pdf, cfg) {
   )
 }
 
-read_zid_cv <- function(img_path, cfg, form_pdf) {
+read_zid_cv <- function(img_path, cfg, form_pdf, ctx = NULL) {
   grid <- load_id_grid_from_form(form_pdf, cfg)
   if (is.null(grid)) {
     return(list(zid = NA_character_, uncertain = TRUE,
                 note = "zID grid coordinates unavailable"))
   }
-  ctx <- build_map_xy(img_path)
+  if (is.null(ctx)) ctx <- build_map_xy(img_path)
   blank <- blank_form_ctx(form_pdf, 1L, ctx$w)
 
   digits <- character(cfg$id$digits)
@@ -849,12 +1093,15 @@ cv_parse_page <- function(img_path, page_num, cfg, layouts, sheet_page = NA_inte
     layouts[[1]]
   }
 
-  read <- read_answers_cv(img_path, cfg, layout, sheet_page)
+  reg <- register_page(img_path, cfg, layout, sheet_page)
+  read <- read_answers_cv(img_path, cfg, layout, sheet_page, reg = reg)
   form_pdf <- form_pdf_for(layout)
   # The zID grid is printed on the front of the sheet only.
   on_front <- is.na(sheet_page) || sheet_page == 1L
-  zid <- if (on_front) {
-    read_zid_cv(img_path, cfg, form_pdf)
+  zid <- if (on_front && !isTRUE(read$marker_ok)) {
+    list(zid = paste0(cfg$id$prefix, strrep("?", cfg$id$digits)), uncertain = TRUE, note = "")
+  } else if (on_front) {
+    read_zid_cv(img_path, cfg, form_pdf, ctx = reg$ctx)
   } else {
     list(zid = NA_character_, uncertain = FALSE, note = "")
   }
@@ -862,7 +1109,7 @@ cv_parse_page <- function(img_path, page_num, cfg, layouts, sheet_page = NA_inte
   answers <- read$answers
   uncertain <- isTRUE(read$uncertain)
   notes <- read$notes
-  if (!isTRUE(read$marker_ok)) notes <- c(notes, "registration marker detection failed")
+
   if (isTRUE(zid$uncertain) && nzchar(zid$note)) notes <- c(notes, zid$note)
   if (isTRUE(version$uncertain)) notes <- c(notes, version$note)
 

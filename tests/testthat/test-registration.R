@@ -50,14 +50,80 @@ test_that("a page with no markers reports failure instead of guessing", {
   expect_false(build_map_xy(f)$marker_ok)
 })
 
-test_that("a marker cut off by the edge of the scan fails registration", {
-  # Shifted 5 mm right, the right-hand squares (printed 3-8 mm from the edge)
-  # are half off the page. Their centroids would be wrong by pixels, so the
-  # page must be reported as unregistered rather than read slightly off.
+test_that("a page with markers cut off is registered correctly or reported, never misplaced", {
+  # Shifted 5.5 mm right, the right-hand squares (printed 3-8 mm from the edge)
+  # are cut off and must not be used. What is left either places the page
+  # correctly, or the page is reported as out of register.
+  cfg <- load_exam_config(file.path(example_dir(), "exam.yml"))
+  L <- suppressMessages(form_layouts(cfg, file.path(example_dir(), "output")))[["1"]]
+  work <- withr::local_tempdir()
+  ref <- build_map_xy(page_png(attr(L, "form_pdf"), 1, work, "ref.png"))
+  f <- file.path(work, "clipped.jpg")
+  magick::image_write(magick::image_read(page_png(attr(L, "form_pdf"), 1, work, "src.png")),
+                      f, format = "jpeg")
+  scannerise(f, dx_mm = 5.5)
+  g <- gray_matrix(magick::image_read(f))
+  pts <- detect_corner_markers(g, ncol(g), nrow(g))
+  expect_true(all(is.na(pts[c("tr", "br"), ])))       # the cut-off ones
+  reg <- register_page(f, cfg, L, 1L)
+  if (reg$registered) {
+    px <- reg$ctx$w / 210
+    d <- reg$ctx$map_xy(0.5, 0.5) - ref$map_xy(0.5, 0.5)
+    expect_lt(abs(unname(d["x"]) - 5.5 * px), 3)
+    expect_lt(abs(unname(d["y"])), 3)
+  } else {
+    expect_match(reg$note, "rescan it straight")
+  }
+})
+
+test_that("a banner or text block is never taken for a missing marker", {
+  # With the top-right marker cut off, the black Version banner on the example
+  # form sits in its search window. It must not be used.
   work <- withr::local_tempdir()
   form <- file.path(example_dir(), "output", "quizform_v1.pdf")
-  f <- file.path(work, "clipped.jpg")
+  f <- file.path(work, "c.jpg")
   magick::image_write(magick::image_read(page_png(form, 1, work, "src.png")), f, format = "jpeg")
   scannerise(f, dx_mm = 5.5)
-  expect_false(build_map_xy(f)$marker_ok)
+  g <- gray_matrix(magick::image_read(f))
+  pts <- detect_corner_markers(g, ncol(g), nrow(g))
+  expect_true(is.na(pts["tr", "x"]))
+})
+
+test_that("a sheet fed crooked is registered through its rotation", {
+  cfg <- load_exam_config(file.path(example_dir(), "exam.yml"))
+  L <- suppressMessages(form_layouts(cfg, file.path(example_dir(), "output")))[["1"]]
+  work <- withr::local_tempdir()
+  f <- file.path(work, "skew.jpg")
+  magick::image_write(magick::image_read(page_png(attr(L, "form_pdf"), 1, work, "src.png")),
+                      f, format = "jpeg")
+  scannerise(f, deg = 1.5)
+  ctx <- build_map_xy(f)
+  expect_true(ctx$marker_ok)
+  expect_equal(page_angle(ctx$map_xy), 1.5, tolerance = 0.2)
+  blank <- blank_form_ctx(attr(L, "form_pdf"), 1L, ctx$w)
+  off <- registration_offsets(ctx, blank, registration_anchors(cfg, L, 1L))
+  expect_false(anyNA(off))
+  expect_true(all(abs(off) <= 2))
+})
+
+test_that("the registration check measures how far the page is out", {
+  cfg <- load_exam_config(file.path(example_dir(), "exam.yml"))
+  forms <- file.path(example_dir(), "output")
+  L <- suppressMessages(form_layouts(cfg, forms))[["1"]]
+  work <- withr::local_tempdir()
+  f <- page_png(attr(L, "form_pdf"), 1, work, "p.png")
+  ctx <- build_map_xy(f)
+  blank <- blank_form_ctx(attr(L, "form_pdf"), 1L, ctx$w)
+  anchors <- registration_anchors(cfg, L, 1L)
+  expect_gt(nrow(anchors), 1)
+  expect_true(all(abs(registration_offsets(ctx, blank, anchors)) <= 1))
+  # A mapping that is wrong by 6 px right and 3 px down is measured as such.
+  bad <- ctx
+  bad$map_xy <- function(u, v) {
+    m <- ctx$map_xy(u, v)
+    if (is.matrix(m)) sweep(m, 2, c(6, 3)) else m - c(x = 6, y = 3)
+  }
+  off <- registration_offsets(bad, blank, anchors)
+  expect_true(all(abs(off[, "dx"] - 6) <= 1))
+  expect_true(all(abs(off[, "dy"] - 3) <= 1))
 })

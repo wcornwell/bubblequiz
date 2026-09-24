@@ -34,4 +34,13 @@ test_that("mark_quiz marks a folder, takes review decisions, and uploads", {
   rv <- utils::read.csv(file.path(quiz, "review.csv"), colClasses = "character")
   expect_equal(rv$status, "resolved")
   expect_equal(rv$comment, "E crossed out")
+
+  # A copy of the review file opened before that run, saved over it afterwards,
+  # would silently undo the decision: the run refuses instead.
+  rv$correct_answers <- ""
+  utils::write.csv(rv, file.path(quiz, "review.csv"), row.names = FALSE)
+  expect_error(suppressMessages(mark_quiz(quiz, config = cfg, forms = forms)),
+               "saved from a copy opened before")
+  expect_no_error(suppressWarnings(suppressMessages(utils::capture.output(
+    mark_quiz(quiz, config = cfg, forms = forms, accept_review = TRUE)))))
 })

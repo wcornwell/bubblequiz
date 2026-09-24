@@ -30,13 +30,15 @@ REVIEW_DECISIONS <- c("correct_zid", "correct_answers", "resolved", "comment")
 #' Each row is one flagged sheet: its scan folder and page files, what the
 #' marker read (`zid`, `answers`: one letter per question, `*` = uncertain,
 #' `-` = unanswered), the provisional score, the `reason`, and `status`
-#' (`open` or `resolved`). Record decisions in four columns:
+#' (`open`, `resolved` or `excluded`). Record decisions in four columns:
 #'
 #' * `correct_zid`: the right zID, if the one read is wrong or incomplete.
 #' * `correct_answers`: only the answers that change, e.g. `Q5=A` or
 #'   `Q2=B; Q5=-` (`-` for unanswered).
 #' * `resolved`: `yes` once the sheet is checked. Needed when nothing changes
 #'   (e.g. a sheet scanned back side first); implied by any correction.
+#'   `exclude` leaves the sheet out of the upload for good -- for a sheet
+#'   that was rescanned (the rescan is marked in its own right) or spoiled.
 #' * `comment`: free text, kept as written.
 #'
 #' Then run [mark_quiz()] (or [score_results()] with `review =`, then
@@ -78,10 +80,11 @@ export_moodle <- function(dirs,
   }))
   all$needs_review <- as.logical(all$needs_review)
   all$reviewed <- as.logical(all$reviewed)
+  all$excluded <- as.logical(all$excluded %||% FALSE) %in% TRUE
   all$zid <- tolower(trimws(all$zid))
   value <- suppressWarnings(as.numeric(all[[grade]]))
 
-  ok <- !all$needs_review & !is.na(value) & grepl(zid_pattern, all$zid)
+  ok <- !all$needs_review & !all$excluded & !is.na(value) & grepl(zid_pattern, all$zid)
   why <- ifelse(all$needs_review, all$notes,
          ifelse(is.na(value), "not scored",
          ifelse(!grepl(zid_pattern, all$zid), "zID not valid", "")))
@@ -105,7 +108,7 @@ export_moodle <- function(dirs,
     scan = all$scan, files = all$files, zid = all$zid, version = all$exam_version,
     answers = all$answers, provisional = value,
     reason = ifelse(ok, all$notes, why),
-    status = ifelse(ok, "resolved", "open"),
+    status = ifelse(all$excluded, "excluded", ifelse(ok, "resolved", "open")),
     stringsAsFactors = FALSE
   )[listed, , drop = FALSE]
   held <- merge_review(current, review, known = review_key(all$scan, all$files))
@@ -124,7 +127,9 @@ export_moodle <- function(dirs,
   }
 
   utils::write.csv(upload, output, row.names = FALSE)
+  protect_review(review)
   utils::write.csv(held, review, row.names = FALSE, na = "")
+  file.copy(review, review_snapshot(review), overwrite = TRUE)
   n_open <- sum(held$status == "open")
   message(sprintf("Upload:     %d student(s) -> %s", nrow(upload), output))
   message(sprintf("Review:     %d open, %d resolved -> %s", n_open,
@@ -134,6 +139,60 @@ export_moodle <- function(dirs,
             "resolved, comment) and run again.")
   }
   invisible(list(upload = upload, review = held))
+}
+
+# The review file is edited by hand -- often in a spreadsheet that was opened
+# before the pipeline last rewrote it, and saved over the newer version. So:
+# every run keeps a dated copy of the file as it found it, and warns if
+# decisions that were in the file the pipeline last wrote have since vanished.
+review_history_dir <- function(review) file.path(dirname(review), ".review_history")
+review_snapshot <- function(review) {
+  dir.create(review_history_dir(review), showWarnings = FALSE)
+  file.path(review_history_dir(review), paste0(basename(review), ".last-written"))
+}
+
+protect_review <- function(review) {
+  if (!file.exists(review)) return(invisible())
+  dir.create(review_history_dir(review), showWarnings = FALSE)
+  stamp <- format(Sys.time(), "%Y%m%d-%H%M%S")
+  dest <- function(k) file.path(review_history_dir(review), sub(
+    "[.]csv$", paste0("_", stamp, if (k > 1) paste0("-", k), ".csv"), basename(review)))
+  k <- 1L
+  while (file.exists(dest(k))) k <- k + 1L
+  file.copy(review, dest(k))
+  lost <- lost_decisions(review)
+  if (nrow(lost)) {
+    warning(nrow(lost), " decision(s) that were in the review file last time are now empty ",
+            "-- was it saved from a copy opened before the last run? e.g. ",
+            paste(utils::head(sprintf("%s %s: %s = '%s'", lost$scan, lost$files, lost$column,
+                                      lost$was), 3), collapse = "; "),
+            ". The version last written is ", review_snapshot(review),
+            "; earlier ones are in ", review_history_dir(review), ".", call. = FALSE)
+  }
+  invisible()
+}
+
+# lost_decisions: cells the reviewer had filled in the version the pipeline
+# last wrote that are empty in the file now.
+lost_decisions <- function(review) {
+  none <- data.frame(scan = character(), files = character(), column = character(),
+                     was = character(), stringsAsFactors = FALSE)
+  snap <- review_snapshot(review)
+  if (!file.exists(snap) || !file.exists(review)) return(none)
+  was <- utils::read.csv(snap, colClasses = "character", check.names = FALSE)
+  now <- utils::read.csv(review, colClasses = "character", check.names = FALSE)
+  cols <- intersect(setdiff(names(was), REVIEW_GENERATED), names(now))
+  m <- match(review_key(was$scan, was$files), review_key(now$scan, now$files))
+  out <- list()
+  for (col in cols) {
+    filled_before <- !is.na(was[[col]]) & nzchar(trimws(was[[col]]))
+    empty_now <- !is.na(m) & (is.na(now[[col]][m]) | !nzchar(trimws(now[[col]][m])))
+    k <- which(filled_before & empty_now)
+    if (length(k)) out[[col]] <- data.frame(scan = was$scan[k], files = was$files[k],
+                                            column = col, was = was[[col]][k],
+                                            stringsAsFactors = FALSE)
+  }
+  if (length(out)) do.call(rbind, out) else none
 }
 
 # merge_review: combine this run's review rows with the review file on disk.
@@ -230,10 +289,15 @@ review_decisions <- function(review, scan, cfg) {
       decided <- TRUE
     }
     res <- tolower(trimws(r$resolved[i]))
+    if (!blank(r$resolved[i]) && res %in% c("exclude", "excluded", "rescanned", "void")) {
+      add(file, "exclude", NA_character_)
+      next
+    }
     if (!blank(r$resolved[i]) && res %in% c("yes", "y", "true", "1", "x", "ok", "done")) {
       decided <- TRUE
     } else if (!blank(r$resolved[i]) && !res %in% c("no", "n", "false", "0")) {
-      stop(where, ": resolved should be yes or no, not '", r$resolved[i], "'", call. = FALSE)
+      stop(where, ": resolved should be yes, no or exclude, not '", r$resolved[i], "'",
+           call. = FALSE)
     }
     if (decided) add(file, "ok", NA_character_)
   }
@@ -259,6 +323,9 @@ review_decisions <- function(review, scan, cfg) {
 #' @param output Path for the upload CSV.
 #' @param review Path for the review file.
 #' @param remark Mark every scan again even if already marked.
+#' @param accept_review Run even though decisions that were in the review
+#'   file after the last run have since been emptied. Without it, that stops
+#'   the run: it usually means the file was saved from a stale copy.
 #' @return Invisibly, what [export_moodle()] returns.
 #' @export
 mark_quiz <- function(folder,
@@ -268,9 +335,20 @@ mark_quiz <- function(folder,
                       grade_item = "Quiz",
                       output     = file.path(folder, "moodle_import.csv"),
                       review     = file.path(folder, "review.csv"),
-                      remark     = FALSE) {
+                      remark     = FALSE,
+                      accept_review = FALSE) {
   cfg <- if (is.list(config)) config else load_exam_config(config)
   pdfs <- sort(list.files(folder, pattern = "[.]pdf$", full.names = TRUE, ignore.case = TRUE))
+  lost <- if (accept_review) data.frame() else lost_decisions(review)
+  if (nrow(lost)) {
+    stop(nrow(lost), " decision(s) that were in ", basename(review), " after the last run are ",
+         "now empty -- it looks like it was saved from a copy opened before that run:\n",
+         paste(sprintf("  %s %s: %s was '%s'", lost$scan, lost$files, lost$column, lost$was),
+               collapse = "\n"),
+         "\nThe version the last run wrote is ", review_snapshot(review), ". Put the ",
+         "decisions back (or copy your new edits into that version), then run again. ",
+         "To accept the file as it is, pass accept_review = TRUE.", call. = FALSE)
+  }
   if (!length(pdfs)) stop("No scan PDFs in ", folder, call. = FALSE)
   dirs <- file.path(dirname(pdfs), tools::file_path_sans_ext(basename(pdfs)))
 
