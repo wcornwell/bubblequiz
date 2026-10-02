@@ -3,6 +3,9 @@
 \usepackage{fontspec}\setmainfont{Helvetica Neue} % Sans-serif body font (requires xelatex)
 \usepackage[compact]{titlesec}                  % Reduce whitespace around headings
 
+% titlesec needs an explicit \titleformat for every level \titlespacing touches;
+% without this, recent versions abort with "No format for this command".
+\titleformat{\section}{\LARGE\bfseries}{\thesection}{1em}{}                        % # large bold
 \titlespacing*{\section}{0pt}{8pt plus 2pt minus 2pt}{4pt plus 1pt minus 1pt}       % # spacing
 \titleformat{\subsection}{\Large\bfseries}{\thesubsection}{1em}{}                    % ## larger bold
 \titlespacing*{\subsection}{0pt}{6pt plus 2pt minus 2pt}{3pt plus 1pt minus 1pt}    % ## spacing

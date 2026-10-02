@@ -8,6 +8,7 @@ mark_scans_cv(
   dir,
   config = default_config_path(),
   layout = "output/layout.R",
+  forms = NULL,
   dry_run = FALSE
 )
 }
@@ -16,7 +17,13 @@ mark_scans_cv(
 
 \item{config}{Path to the exam config YAML, or a loaded config list.}
 
-\item{layout}{Path to the calibrated layout file, or a loaded layout list.}
+\item{layout}{Path to the calibrated layout file, or a loaded layout list
+(a single layout, or a per-version set from [form_layouts()]). When the
+folder holding the layout file also holds `quizform_v<N>.pdf` for every
+version, those forms are calibrated directly and the file is not used.}
+
+\item{forms}{Folder holding `quizform_v<N>.pdf` for every version. Defaults
+to the folder holding `layout`.}
 
 \item{dry_run}{Process only the first 3 pending pages.}
 }
@@ -24,7 +31,9 @@ mark_scans_cv(
 Invisibly, the updated progress data frame.
 }
 \description{
-Reads calibrated answer bubbles directly from scan pixels. This currently
-records answer bubbles and flags the row for review because version and zID
-bubbles are not yet calibrated/read by the CV path.
+Reads answer and zID bubbles directly from scan pixels. Each page's version
+comes from its QR code, and the page is read against that version's own
+form. A page is flagged `needs_review` only when something on it was not
+read cleanly: an ambiguous bubble, an unreadable zID digit, an unreadable
+QR, or failed registration.
 }

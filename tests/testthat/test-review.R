@@ -227,6 +227,56 @@ test_that("export warns when decisions have not been scored yet", {
   expect_warning(export(dir, out), "not in the scores yet")
 })
 
+test_that("export warns when a decision is typed in the comment column", {
+  dir <- review_dir()
+  out <- file.path(dir, "moodle.csv")
+  score(dir); export(dir, out)
+  review <- sub("[.]csv$", "_to_review.csv", out)
+  rv <- review_of(out)
+  for (c in c("2=A", "Q2=A; Q4=-", "3333333", "z3333333", "looks good", "exclude")) {
+    x <- rv; x$comment[1] <- c
+    utils::write.csv(x, review, row.names = FALSE)
+    expect_warning(export(dir, out), "comment column", info = c)
+  }
+  x <- rv; x$comment[1] <- "B crossed out, ask the student"
+  utils::write.csv(x, review, row.names = FALSE)
+  expect_no_warning(export(dir, out))
+})
+
+test_that("a zID not on the roster is held for review, with the closest names", {
+  dir <- review_dir()
+  out <- file.path(dir, "moodle.csv")
+  roster <- file.path(dir, "roster.csv")
+  utils::write.csv(data.frame(`First name` = c("Ann", "Bo", "Cy"), `Last name` = c("Lee", "Ng", "Wu"),
+                              Username = c("z1111117", "z2222222", "z3333333"), check.names = FALSE),
+                   roster, row.names = FALSE)
+  score(dir)
+  res <- export(dir, out, roster = roster)
+  expect_false("z1111111" %in% res$upload$Username)       # clean sheet, but not enrolled
+  rv <- review_of(out)
+  row <- rv$zid == "z1111111"
+  expect_equal(rv$status[row], "open")
+  expect_match(rv$reason[row], "not on roster; closest: z1111117 Ann Lee")
+
+  rv$correct_zid[row] <- "1111117"
+  review <- sub("[.]csv$", "_to_review.csv", out)
+  utils::write.csv(rv, review, row.names = FALSE)
+  utils::capture.output(suppressMessages(score_results(dir, key = file.path(dir, "key.csv"),
+                                                       config = test_config(), review = review)))
+  expect_true("z1111117" %in% export(dir, out, roster = roster)$upload$Username)
+
+  utils::write.csv(data.frame(zid = "z1111111"), roster, row.names = FALSE)
+  expect_error(export(dir, out, roster = roster), "no Username column")
+})
+
+test_that("roster suggestions are one digit off or the same digits swapped", {
+  ros <- data.frame(zid = c("z5681797", "z5757355", "z5758557", "z5759555"),
+                    name = c("A", "B", "C", "D"), stringsAsFactors = FALSE)
+  expect_equal(roster_miss_reason("z5621797", ros), "zID not on roster; closest: z5681797 A")
+  expect_equal(roster_miss_reason("z5757553", ros), "zID not on roster; closest: z5757355 B")
+  expect_equal(roster_miss_reason("z1234567", ros), "zID not on roster")
+})
+
 test_that("export refuses a zID that appears on two sheets", {
   dir <- review_dir(ov_row(file = "page_0005.png", question = "zid", response = "z1111111"))
   score(dir)

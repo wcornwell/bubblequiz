@@ -52,6 +52,10 @@ REVIEW_DECISIONS <- c("correct_zid", "correct_answers", "resolved", "comment")
 #' @param review Path for the review file.
 #' @param config Path to the exam config YAML, or a loaded config list.
 #' @param grade `"score"` (questions correct) or `"marks"` (weighted marks).
+#' @param roster Optional class list: a CSV with a `Username` column, such as
+#'   a Moodle gradebook export (Grades > Export > Plain text file). A sheet
+#'   whose zID is not on it is held back for review rather than uploaded, with
+#'   the closest zIDs on the roster, and their names, given in the reason.
 #' @return Invisibly, a list with the `upload` and `review` data frames.
 #' @export
 export_moodle <- function(dirs,
@@ -59,7 +63,8 @@ export_moodle <- function(dirs,
                           grade_item = "Quiz",
                           review     = sub("[.]csv$", "_to_review.csv", output),
                           config     = default_config_path(),
-                          grade      = c("score", "marks")) {
+                          grade      = c("score", "marks"),
+                          roster     = NULL) {
   grade <- match.arg(grade)
   cfg <- if (is.list(config)) config else load_exam_config(config)
   zid_pattern <- zid_regex(cfg)
@@ -88,6 +93,17 @@ export_moodle <- function(dirs,
   why <- ifelse(all$needs_review, all$notes,
          ifelse(is.na(value), "not scored",
          ifelse(!grepl(zid_pattern, all$zid), "zID not valid", "")))
+
+  # A well-formed zID can still be the wrong one -- a misbubbled digit or a
+  # typo in correct_zid -- and Moodle then files the grade under someone who is
+  # not in the course. Against a roster, such a sheet goes back to review.
+  if (!is.null(roster)) {
+    ros <- read_roster(roster)
+    off <- !all$excluded & grepl(zid_pattern, all$zid) & !all$zid %in% ros$zid
+    miss <- vapply(all$zid[off], roster_miss_reason, character(1), ros = ros)
+    why[off] <- ifelse(nzchar(why[off]), paste(why[off], miss, sep = " | "), miss)
+    ok <- ok & !off
+  }
 
   dup <- unique(all$zid[ok][duplicated(all$zid[ok])])
   if (length(dup)) {
@@ -124,6 +140,19 @@ export_moodle <- function(dirs,
     warning(sum(decided & !applied), " decision(s) in the review file are not in the ",
             "scores yet. Run mark_quiz(), or score_results(review = ...) on each ",
             "folder, then export again.", call. = FALSE)
+  }
+
+  # The comment column is free text and never read as a decision, so a
+  # correction typed there is silently ignored. Name any open sheet whose
+  # comment looks like one.
+  misplaced <- held$status == "open" & !decided & comment_looks_like_decision(held$comment, cfg)
+  if (any(misplaced)) {
+    warning(sum(misplaced), " open sheet(s) have what looks like a decision in the comment ",
+            "column, which is not read. Move it to correct_zid, correct_answers or ",
+            "resolved, and run again:\n",
+            paste(sprintf("  %s %s: comment '%s'", held$scan[misplaced], held$files[misplaced],
+                          held$comment[misplaced]), collapse = "\n"),
+            call. = FALSE)
   }
 
   utils::write.csv(upload, output, row.names = FALSE)
@@ -235,7 +264,53 @@ review_key <- function(scan, files) {
                      function(f) paste(sort(basename(f)), collapse = ";"), character(1)))
 }
 
-zid_regex <- function(cfg) sprintf("^%s[0-9]{%d}$", cfg$id$prefix, as.integer(cfg$id$digits))
+# read_roster: zIDs (lower case) and display names from a class list CSV with
+# a Username column; a Moodle gradebook export has First name / Last name too.
+read_roster <- function(path) {
+  r <- utils::read.csv(path, colClasses = "character", check.names = FALSE)
+  col <- function(name) {
+    i <- match(name, tolower(trimws(names(r))))
+    if (is.na(i)) NULL else trimws(r[[i]])
+  }
+  zid <- col("username")
+  if (is.null(zid)) stop("Roster ", path, " has no Username column.", call. = FALSE)
+  name <- trimws(paste(col("first name") %||% "", col("last name") %||% ""))
+  data.frame(zid = tolower(zid), name = name, stringsAsFactors = FALSE)
+}
+
+# roster_miss_reason: review reason for a zID not on the roster, naming the
+# roster zIDs a student or reviewer could plausibly have meant -- one digit
+# different, or the same digits with some swapped -- so the reviewer can match
+# one to the name written on the sheet. Any two-digit difference would name
+# too many: in a class of a few hundred, several zIDs are that close by chance.
+roster_miss_reason <- function(zid, ros) {
+  same <- ros[nchar(ros$zid) == nchar(zid), , drop = FALSE]
+  z0 <- strsplit(zid, "")[[1]]
+  near_one <- vapply(strsplit(same$zid, ""), function(z) {
+    d <- sum(z != z0)
+    d == 1 || (d <= 3 && identical(sort(z), sort(z0)))
+  }, logical(1))
+  near <- same[near_one, , drop = FALSE]
+  if (!nrow(near)) return("zID not on roster")
+  paste0("zID not on roster; closest: ",
+         paste(trimws(paste(near$zid, near$name)), collapse = ", "))
+}
+
+# comment_looks_like_decision:TRUE for a comment written the way a decision
+# column would be filled -- answer changes (Q5=A; 2=B), a zID with or without
+# its prefix, or a sign-off (yes, ok, looks good, exclude).
+comment_looks_like_decision <- function(comment, cfg) {
+  x <- tolower(trimws(ifelse(is.na(comment), "", comment)))
+  answers <- vapply(strsplit(x, "[;,[:space:]]+"), function(tok) {
+    length(tok) > 0 && all(grepl("^q?[0-9]+=[a-z-]?$", tok))
+  }, logical(1))
+  zid <- grepl(sprintf("^(%s)?[0-9]{%d}$", tolower(cfg$id$prefix), as.integer(cfg$id$digits)), x)
+  signoff <- x %in% c("yes", "y", "ok", "done", "resolved", "looks good", "checked",
+                      "exclude", "excluded", "rescanned", "void")
+  nzchar(x) & (answers | zid | signoff)
+}
+
+zid_regex <- function(cfg)sprintf("^%s[0-9]{%d}$", cfg$id$prefix, as.integer(cfg$id$digits))
 
 # review_decisions: turn the reviewer's columns for one scan folder into
 # override rows (file, page, zid, name, question, response), the form
@@ -326,6 +401,8 @@ review_decisions <- function(review, scan, cfg) {
 #' @param accept_review Run even though decisions that were in the review
 #'   file after the last run have since been emptied. Without it, that stops
 #'   the run: it usually means the file was saved from a stale copy.
+#' @param roster Optional class list CSV with a `Username` column (a Moodle
+#'   gradebook export will do); see [export_moodle()].
 #' @return Invisibly, what [export_moodle()] returns.
 #' @export
 mark_quiz <- function(folder,
@@ -336,7 +413,8 @@ mark_quiz <- function(folder,
                       output     = file.path(folder, "moodle_import.csv"),
                       review     = file.path(folder, "review.csv"),
                       remark     = FALSE,
-                      accept_review = FALSE) {
+                      accept_review = FALSE,
+                      roster     = NULL) {
   cfg <- if (is.list(config)) config else load_exam_config(config)
   pdfs <- sort(list.files(folder, pattern = "[.]pdf$", full.names = TRUE, ignore.case = TRUE))
   lost <- if (accept_review) data.frame() else lost_decisions(review)
@@ -371,5 +449,5 @@ mark_quiz <- function(folder,
                                         review = review))
   }
   export_moodle(dirs, output = output, grade_item = grade_item, review = review,
-                config = cfg)
+                config = cfg, roster = roster)
 }

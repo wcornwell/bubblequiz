@@ -157,7 +157,11 @@ latex_inline_quiz <- function(cfg, blocks, version) {
     "\\newcommand{\\bub}[1]{\\begin{tikzpicture}[baseline=-0.6ex]\\draw[line width=1.2pt](0,0) circle (8pt);\\node[font=\\fontsize{7.2}{7.2}\\selectfont\\bfseries] at (0,0){#1};\\end{tikzpicture}\\hspace{4pt}}",
     sprintf("\\newcommand{\\questionblock}[2]{\\vspace{%s}\\textbf{Q#1.} #2\\par}",
             cfg$spacing$stem %||% "4pt"),
-    "\\newcommand{\\answerline}[2]{\\textbf{Answer Q#1}\\quad #2\\par}",
+    # Fixed-width label. Left to its natural width, "Answer Q10" is wider than
+    # "Answer Q1", which shifts the bubble row right on any page carrying
+    # double-digit questions -- calibration then refuses the form because the
+    # columns no longer line up across pages.
+    "\\newcommand{\\answerline}[2]{\\makebox[5.9em][l]{\\textbf{Answer Q#1}}#2\\par}",
     # Per-page QR payload. The page and page-count fields are expanded at
     # shipout, so every page identifies itself: a scanned stack can be checked
     # for missing pages and reordered without relying on scan order. The
@@ -185,22 +189,18 @@ latex_inline_quiz <- function(cfg, blocks, version) {
     "  \\node[anchor=south east, inner sep=0pt] at ([xshift=-12mm, yshift=3mm]current page.south east) {\\bqpageqr};",
     "\\end{tikzpicture}}",
     "\\begin{document}",
-    "\\begin{minipage}[t]{0.70\\linewidth}",
-    sprintf("{\\LARGE\\bfseries %s}\\\\[1pt]", tex_escape(cfg$title)),
-    sprintf("{\\normalsize %s}", tex_escape(cfg$subtitle)),
-    "\\end{minipage}\\hfill",
-    "\\begin{minipage}[t]{0.28\\linewidth}\\raggedleft",
-    sprintf("\\colorbox{black}{\\textcolor{white}{\\large\\bfseries\\quad Version %s\\quad}}\\\\[2pt]",
-            tex_escape(version)),
-    sprintf("{\\footnotesize %s}", tex_escape(cfg$date)),
-    "\\end{minipage}\\\\[2pt]",
-    "\\rule{\\linewidth}{1.2pt}",
+    # No title block: the zID bubble grid is the one thing every student must
+    # fill in correctly for the paper to be attributable, so it sits at the very
+    # top of the page rather than below a banner. Version and date move to the
+    # left, where the eye starts; the page QR and the corner fiducials still
+    # identify the paper for the marker.
     "\\begin{minipage}[t]{0.40\\linewidth}",
-    "\\vspace{2pt}",
-    "\\textbf{Name}\\quad\\underline{\\hspace{0.74\\linewidth}}",
+    sprintf("\\colorbox{black}{\\textcolor{white}{\\large\\bfseries\\quad Version %s\\quad}}\\\\[3pt]",
+            tex_escape(version)),
+    sprintf("{\\footnotesize %s}\\\\[10pt]", tex_escape(cfg$date)),
+    "\\textbf{Name}\\quad\\underline{\\hspace{0.68\\linewidth}}",
     "\\end{minipage}\\hfill",
     "\\begin{minipage}[t]{0.56\\linewidth}",
-    "\\vspace{2pt}",
     sprintf("\\textbf{Fill %s digit bubbles:}\\\\[-2pt]", tex_escape(cfg$id$label)),
     sprintf("\\begin{tikzpicture}[x=0.82cm, y=-0.50cm]\\foreach \\col in {0,...,%d}{\\foreach \\d in {0,...,9}{\\draw[line width=0.8pt](\\col, \\d) circle (0.19cm);\\node[font=\\fontsize{6.4}{6.4}\\selectfont] at (\\col, \\d) {\\d};}}\\end{tikzpicture}",
             cfg$id$digits - 1L),
