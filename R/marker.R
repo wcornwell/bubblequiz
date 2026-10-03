@@ -41,164 +41,16 @@ load_layout <- function(path = "output/layout.R") {
   } else {
     stats::setNames(rep(1L, length(e$QUESTION_Y)), names(e$QUESTION_Y))
   }
+  form_pdf <- NULL
+  if ("FORM_PDF" %in% ls(e)) {
+    form_pdf <- if (startsWith(e$FORM_PDF, "/")) e$FORM_PDF
+                else file.path(dirname(normalizePath(path, mustWork = TRUE)), e$FORM_PDF)
+  }
   out <- list(ANSWER_X = e$ANSWER_X, QUESTION_COL = e$QUESTION_COL,
-              QUESTION_Y = e$QUESTION_Y, QUESTION_PAGE = question_page)
+              QUESTION_Y = e$QUESTION_Y, QUESTION_PAGE = question_page,
+              form_pdf = form_pdf)
   attr(out, "path") <- normalizePath(path, mustWork = TRUE)
   out
-}
-
-# ---------------------------------------------------------------------------
-# call_claude: call Claude vision API for one page image
-# ---------------------------------------------------------------------------
-call_claude <- function(image_path, model, api_key, prompt) {
-  img_b64  <- base64enc::base64encode(image_path)
-  ext <- tolower(tools::file_ext(image_path))
-  img_type <- switch(ext,
-    "png" = "image/png",
-    "jpg" = "image/jpeg",
-    "jpeg" = "image/jpeg",
-    "webp" = "image/webp",
-    "gif" = "image/gif",
-    "image/jpeg"
-  )
-
-  body <- list(
-    model      = model,
-    max_tokens = 2048,
-    messages   = list(
-      list(
-        role    = "user",
-        content = list(
-          list(
-            type  = "image",
-            source = list(
-              type       = "base64",
-              media_type = img_type,
-              data       = img_b64
-            )
-          ),
-          list(type = "text", text = prompt)
-        )
-      )
-    )
-  )
-
-  resp <- httr2::request("https://api.anthropic.com/v1/messages") |>
-    httr2::req_headers(
-      "x-api-key"         = api_key,
-      "anthropic-version" = "2023-06-01",
-      "content-type"      = "application/json"
-    ) |>
-    httr2::req_body_json(body) |>
-    httr2::req_retry(
-      max_tries = 5,
-      is_transient = \(r) httr2::resp_status(r) %in% c(429, 500, 502, 503, 529),
-      backoff = \(i) min(2^i, 60)
-    ) |>
-    httr2::req_perform()
-
-  parsed <- httr2::resp_body_json(resp)
-  raw_text <- parsed$content[[1]]$text
-  raw_text
-}
-
-# ---------------------------------------------------------------------------
-# parse_response: parse and validate Claude's JSON response
-# ---------------------------------------------------------------------------
-parse_response <- function(raw_text, page_num, cfg) {
-  result <- list(
-    page         = page_num,
-    ok           = FALSE,
-    zid          = NA_character_,
-    name         = NA_character_,
-    exam_version = NA_character_,
-    answers      = NULL,
-    confidence   = NA_character_,
-    notes        = NA_character_,
-    error        = NA_character_
-  )
-
-  # Strip markdown fences if Claude wrapped the JSON anyway
-  clean <- trimws(raw_text)
-  clean <- sub("^```(?:json)?\\s*", "", clean, perl = TRUE)
-  clean <- sub("\\s*```$", "", clean, perl = TRUE)
-
-  parsed <- tryCatch(jsonlite::fromJSON(clean, simplifyVector = TRUE), error = function(e) NULL)
-
-  if (is.null(parsed)) {
-    result$error <- paste("JSON parse failed:", substr(clean, 1, 200))
-    return(result)
-  }
-
-  version <- as.character(parsed$exam_version)
-  if (!version %in% cfg$valid_versions) {
-    result$error <- paste("Invalid exam_version:", version)
-    result$exam_version <- version
-    return(result)
-  }
-
-  answers <- parsed$answers
-  got_qs  <- as.integer(names(answers))
-  missing  <- setdiff(cfg$questions, got_qs)
-  extra    <- setdiff(got_qs, cfg$questions)
-
-  if (length(missing) > 0 || length(extra) > 0) {
-    result$error <- paste(
-      "Answer count mismatch. Missing:", paste(missing, collapse = ","),
-      "Extra:", paste(extra, collapse = ",")
-    )
-    return(result)
-  }
-
-  # Normalise answers: allow A-E, A-E with trailing *, or "" (blank row)
-  blank_qs <- integer(0)
-  for (q in cfg$questions) {
-    q_chr <- as.character(q)
-    ans <- answers[[q_chr]]
-    if (is.null(ans) || length(ans) == 0 || is.na(ans)) {
-      ans <- ""
-    }
-    ans <- toupper(trimws(as.character(ans)[1]))
-
-    if (ans == "") {
-      blank_qs <- c(blank_qs, q)
-      answers[[q_chr]] <- ""
-      next
-    }
-
-    base_ans <- sub("\\*$", "", ans)
-    star_matches <- gregexpr("\\*", ans, perl = TRUE)[[1]]
-    star_count <- if (identical(star_matches[1], -1L)) 0L else length(star_matches)
-    has_trailing_star <- grepl("\\*$", ans)
-
-    if (!base_ans %in% cfg$options ||
-        (star_count > 0L && !has_trailing_star) ||
-        star_count > 1L) {
-      result$error <- paste("Invalid answer for Q", q_chr, ":", ans)
-      return(result)
-    }
-
-    answers[[q_chr]] <- if (has_trailing_star) paste0(base_ans, "*") else base_ans
-  }
-
-  result$ok            <- TRUE
-  result$zid           <- as.character(parsed$zid)
-  result$name          <- if (!is.null(parsed$name)) trimws(as.character(parsed$name)) else NA_character_
-  result$exam_version  <- version
-  result$answers       <- answers
-  result$confidence    <- as.character(parsed$confidence)
-  result$notes         <- if (!is.null(parsed$notes)) as.character(parsed$notes) else ""
-
-  # Record blank rows in notes while keeping per-question uncertainty in answers.
-  if (length(blank_qs) > 0) {
-    blank_note <- paste0("Blank answer rows: Q", paste(blank_qs, collapse = ", Q"))
-    if (nchar(trimws(result$notes)) == 0) {
-      result$notes <- blank_note
-    } else {
-      result$notes <- paste(result$notes, blank_note, sep = " | ")
-    }
-  }
-  result
 }
 
 # ---------------------------------------------------------------------------
@@ -442,23 +294,71 @@ questions_on_page <- function(cfg, layout, page_no) {
   cfg$questions[keep]
 }
 
-read_answers_cv <- function(img_path, cfg, layout, page_no = NA_integer_) {
-  ctx <- build_map_xy(img_path)
+# Darkest ink within a small window around a bubble center. The window absorbs
+# small registration error between the blank form and this particular scan.
+bubble_darkness <- function(ctx, x_pos, y_pos) {
   radius <- max(5L, as.integer(ctx$w * 0.0062))
   search_offsets <- seq(-18L, 18L, by = 6L)
-  score_near <- function(x_pos, y_pos) {
-    pt <- ctx$map_xy(x_pos, y_pos)
-    vals <- c()
-    for (dx in search_offsets) {
-      for (dy in search_offsets) {
-        vals <- c(vals, ink_score(ctx$gray,
-                                  as.integer(pt["x"] + dx),
-                                  as.integer(pt["y"] + dy),
-                                  radius))
-      }
+  pt <- ctx$map_xy(x_pos, y_pos)
+  vals <- c()
+  for (dx in search_offsets) {
+    for (dy in search_offsets) {
+      vals <- c(vals, ink_score(ctx$gray,
+                                as.integer(pt["x"] + dx),
+                                as.integer(pt["y"] + dy),
+                                radius))
     }
-    max(vals, na.rm = TRUE)
   }
+  max(vals, na.rm = TRUE)
+}
+
+# Unfilled ink for every bubble on the blank form, measured the same way a scan
+# is read. The printed option letter is dark ink inside the circle, so an empty
+# bubble is not zero, and that floor differs by letter (B is denser than A).
+form_baseline <- function(layout, cfg) {
+  if (is.null(layout$form_pdf) || !file.exists(layout$form_pdf)) {
+    stop("Blank form not found for this layout (", layout$form_pdf %||% "no FORM_PDF",
+         "). Re-run calibrate_coords() with the blank form PDF.", call. = FALSE)
+  }
+  n_pages <- pdftools::pdf_length(layout$form_pdf)
+  pngs <- file.path(tempdir(), sprintf("bq-baseline-p%02d.png", seq_len(n_pages)))
+  pdftools::pdf_convert(layout$form_pdf, format = "png", dpi = 150,
+                        pages = seq_len(n_pages), filenames = pngs, verbose = FALSE)
+
+  answers <- list()
+  for (pg in seq_len(n_pages)) {
+    qs <- questions_on_page(cfg, layout, pg)
+    if (length(qs) == 0) next
+    ctx <- build_map_xy(pngs[pg])
+    for (q in qs) {
+      q_chr <- as.character(q)
+      col   <- layout$QUESTION_COL[q_chr]
+      y_pos <- layout$QUESTION_Y[q_chr]
+      answers[[q_chr]] <- vapply(cfg$options, function(letter) {
+        bubble_darkness(ctx, layout$ANSWER_X[[col]][letter], y_pos)
+      }, numeric(1))
+    }
+  }
+
+  # zID baseline: rows are digits 0-9 (row d+1), columns are ID digit positions.
+  zid <- NULL
+  grid <- load_id_grid_from_form(layout$form_pdf, cfg)
+  if (!is.null(grid)) {
+    ctx1 <- build_map_xy(pngs[1])
+    radius <- max(4L, as.integer(ctx1$w * 0.0042))
+    zid <- vapply(seq_len(cfg$id$digits), function(col_i) {
+      vapply(as.character(0:9), function(d) {
+        pt <- ctx1$map_xy(grid$x[[as.character(col_i)]], grid$y[[d]])
+        ink_score(ctx1$gray, as.integer(pt["x"]), as.integer(pt["y"]), radius)
+      }, numeric(1))
+    }, numeric(10))
+  }
+  width <- magick::image_info(magick::image_read(pngs[1]))$width
+  list(answers = answers, zid = zid, width = width)
+}
+
+read_answers_cv <- function(img_path, cfg, layout, page_no = NA_integer_, baseline = NULL) {
+  ctx <- build_map_xy(img_path)
   answers <- stats::setNames(vector("list", length(cfg$questions)),
                              as.character(cfg$questions))
   notes <- character(0)
@@ -485,9 +385,10 @@ read_answers_cv <- function(img_path, cfg, layout, page_no = NA_integer_) {
     inks <- vapply(cfg$options, function(letter) {
       x_pos <- layout$ANSWER_X[[col]][letter]
       if (is.null(x_pos) || is.na(x_pos)) return(NA_real_)
-      score_near(x_pos, y_pos)
+      bubble_darkness(ctx, x_pos, y_pos)
     }, numeric(1))
     names(inks) <- cfg$options
+    if (!is.null(baseline)) inks <- inks - baseline[[q_chr]][cfg$options]
     inks_by_q[[q_chr]] <- inks
 
     cls <- classify_bubble_row(inks)
@@ -528,7 +429,7 @@ load_id_grid_from_form <- function(form_pdf, cfg) {
   )
 }
 
-read_zid_cv <- function(img_path, cfg, form_pdf) {
+read_zid_cv <- function(img_path, cfg, form_pdf, baseline = NULL) {
   grid <- load_id_grid_from_form(form_pdf, cfg)
   if (is.null(grid)) {
     return(list(zid = NA_character_, uncertain = TRUE,
@@ -545,6 +446,7 @@ read_zid_cv <- function(img_path, cfg, form_pdf) {
       ink_score(ctx$gray, as.integer(pt["x"]), as.integer(pt["y"]), radius)
     }, numeric(1))
     names(inks) <- names(grid$y)
+    if (!is.null(baseline)) inks <- inks - baseline[as.integer(names(grid$y)) + 1L, col_i]
     cls <- classify_bubble_row(inks, min_ink = 28, min_gap = 8, double_gap = 6)
     if (!nzchar(cls$answer) || grepl("\\*$", cls$answer)) {
       digits[col_i] <- "?"
@@ -594,8 +496,9 @@ compare_crop <- function(a, b) {
   mean(abs(va - vb), na.rm = TRUE)
 }
 
-read_version_cv <- function(img_path, cfg, template_dir) {
-  templates <- file.path(template_dir, sprintf("quizform_v%s.pdf", cfg$valid_versions))
+read_version_cv <- function(img_path, cfg, form_pdf) {
+  pattern   <- sub("_v[0-9]+\\.pdf$", "_v%s.pdf", basename(form_pdf))
+  templates <- file.path(dirname(form_pdf), sprintf(pattern, cfg$valid_versions))
   names(templates) <- cfg$valid_versions
   templates <- templates[file.exists(templates)]
   if (length(templates) == 0) {
@@ -660,7 +563,8 @@ parse_qr_payload <- function(payload) {
   out
 }
 
-cv_parse_page <- function(img_path, page_num, cfg, layout, sheet_page = NA_integer_) {
+cv_parse_page <- function(img_path, page_num, cfg, layout, sheet_page = NA_integer_,
+                          baseline = NULL) {
   qr <- decode_qr_cv(img_path)
   qr_fields <- parse_qr_payload(qr$payload)
   # Prefer the sheet page passed in (from the validated scan sequence); fall
@@ -668,19 +572,17 @@ cv_parse_page <- function(img_path, page_num, cfg, layout, sheet_page = NA_integ
   if (is.na(sheet_page) && !is.null(qr_fields$page)) {
     sheet_page <- suppressWarnings(as.integer(qr_fields$page))
   }
-  read <- read_answers_cv(img_path, cfg, layout, sheet_page)
-  layout_dir <- dirname(attr(layout, "path") %||% "output/layout.R")
-  form_pdf <- file.path(layout_dir, "quizform_v1.pdf")
+  read <- read_answers_cv(img_path, cfg, layout, sheet_page, baseline$answers)
   # The zID grid is printed on the front of the sheet only.
   zid <- if (is.na(sheet_page) || sheet_page == 1L) {
-    read_zid_cv(img_path, cfg, form_pdf)
+    read_zid_cv(img_path, cfg, layout$form_pdf, baseline$zid)
   } else {
     list(zid = NA_character_, uncertain = FALSE, note = "")
   }
   version <- if (!is.null(qr_fields$version) && qr_fields$version %in% cfg$valid_versions) {
     list(version = qr_fields$version, uncertain = FALSE, note = paste("QR:", qr$payload))
   } else {
-    fallback <- read_version_cv(img_path, cfg, layout_dir)
+    fallback <- read_version_cv(img_path, cfg, layout$form_pdf)
     fallback$note <- paste(c(qr$note, fallback$note), collapse = " | ")
     fallback
   }
@@ -735,6 +637,15 @@ mark_scans_cv <- function(dir,
 
   message("Loading progress CSV: ", csv_path)
   progress <- readr::read_csv(csv_path, show_col_types = FALSE)
+  baseline <- form_baseline(layout, cfg)
+  if (nrow(progress) > 0) {
+    scan_w <- magick::image_info(magick::image_read(file.path(dir, progress$file[1])))$width
+    if (scan_w != baseline$width) {
+      warning("Scans are ", scan_w, " px wide but the blank form baseline is ",
+              baseline$width, " px. Rescan at the preprocess DPI (150) or the blank ",
+              "baseline will not match.", call. = FALSE)
+    }
+  }
   if (!("name" %in% names(progress))) progress$name <- NA_character_
 
   # Sheet grouping from check_scan_sequence(), when it has been run. Without it
@@ -776,7 +687,7 @@ mark_scans_cv <- function(dir,
     message(sprintf("  Page %d / %d  [%s] ...", page_num, nrow(progress), progress$file[idx]))
 
     parsed <- tryCatch(
-      cv_parse_page(img_path, page_num, cfg, layout, progress$sheet_page[idx]),
+      cv_parse_page(img_path, page_num, cfg, layout, progress$sheet_page[idx], baseline),
       error = function(e) list(
         page = page_num, ok = FALSE, zid = NA_character_, name = NA_character_,
         exam_version = NA_character_, answers = NULL, confidence = NA_character_,

@@ -176,6 +176,15 @@ calibrate_coords <- function(config  = default_config_path(),
                  collapse = ","),
            "\n)")
   )
+  out_dir  <- normalizePath(dirname(out), mustWork = TRUE)
+  pdf_abs  <- normalizePath(pdf, mustWork = TRUE)
+  rel_pdf  <- if (startsWith(pdf_abs, paste0(out_dir, "/"))) substring(pdf_abs, nchar(out_dir) + 2) else pdf_abs
+  lines <- c(lines,
+    "",
+    "# The blank form these coordinates were measured from. The marker re-reads it",
+    "# to measure each bubble's unfilled ink, which is the baseline a filled bubble",
+    "# is compared against.",
+    sprintf('FORM_PDF <- "%s"', rel_pdf))
   writeLines(lines, out)
   message("Wrote: ", out)
 
