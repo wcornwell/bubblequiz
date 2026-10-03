@@ -24,7 +24,11 @@ mark_scans_cv(
 Invisibly, the updated progress data frame.
 }
 \description{
-Reads calibrated answer bubbles directly from scan pixels. This currently
-records answer bubbles and flags the row for review because version and zID
-bubbles are not yet calibrated/read by the CV path.
+Reads calibrated answer, zID and version bubbles directly from scan pixels
+(ink sampled at each calibrated bubble center; no API call). Every page this
+processes is currently marked `needs_review = TRUE` regardless of outcome,
+as a blanket safety net while this path is newer and less proven than
+[mark_scans()] -- check the per-answer notes column (a trailing `*` marks
+genuine bubble-level ambiguity) rather than treating every flagged row as
+equally uncertain.
 }

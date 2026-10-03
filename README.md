@@ -1,20 +1,38 @@
 # bubblequiz
 
-`bubblequiz` builds small paper multiple-choice quizzes from a course repository, prints randomized QR-coded forms, scans completed sheets, and marks them with deterministic computer vision.
+You need to give a low-stakes multiple-choice quiz, and you can no longer trust the obvious way to give it.
+
+Put it on the learning platform and a student has an LLM open in the next tab, or
+a browser extension that answers the question before they've finished reading it.
+Locking down the browser, the room, and the network is an arms race you can't win
+one quiz at a time. The old answer to this problem — a printed sheet, a pencil,
+and a bubble to fill in — never had that problem, because there was nothing to
+paste the question into. Most universities, though, dismantled the scantron
+infrastructure that used to make paper multiple choice practical at scale: no
+scanner, no proprietary form, no one left who runs the machine.
+
+`bubblequiz` is a modern, personal-scale replacement for that machine. It
+designs a quiz, typesets it to LaTeX with randomized question/option order and
+QR-coded anchors, and — because it knows the exact geometry of the printed page
+and where every bubble sits relative to those anchors — reads the scanned
+answer sheets back with ordinary computer vision, entirely on your own machine.
+A large language model could technically grade a bubble sheet too, but sending
+a classroom's identifying ID numbers and answers to a cloud API is both a
+privacy exposure you don't need and considerable overkill for a task that comes
+down to "is this box dark or light." Where a mark is genuinely ambiguous —
+a half-filled bubble, a smudge, a stray mark — bubblequiz doesn't guess; it
+flags the row for a human to look at instead.
 
 The package is the reusable engine. Course-specific files such as `exam.yml`, `questions.md`, transcripts, scans, and outputs live in an external course folder.
 
 ## What It Does
 
 - Defines quiz shape once in `exam.yml`.
-- Reads YouTube captions with `yt-dlp` before falling back to audio transcription.
-- Overgenerates candidate questions from a lecture transcript for instructor selection.
-- Checks whether drafted questions are supported by the lecture transcript.
-- Generates multiple randomized versions from `questions.md`.
-- Prints one integrated form per version: questions, answer bubbles, zID bubbles, and QR metadata.
+- Generates multiple randomized versions from `questions.md`, so students sitting next to each other don't have matching sheets to glance across.
+- Prints one integrated form per version: questions, answer bubbles, student-ID bubbles, and a QR anchor carrying the version and page metadata.
 - Combines all versions into one print PDF for easy duplex printing.
-- Reads completed scans with a local computer-vision marker.
-- Scores each page against the correct version-specific answer key.
+- Reads completed scans with a local computer-vision marker — no cloud call, no student data leaving your machine.
+- Scores each page against the correct version-specific answer key, and flags anything ambiguous for manual review instead of silently guessing.
 
 ## Worked Example
 
@@ -47,10 +65,12 @@ The manifest explains exactly what is in the example and how to rebuild it:
 example/six-question-quiz/MANIFEST.md
 ```
 
-The worked example is primarily a printing and version-tracking example. With
-the current inline form renderer, local CV marking is calibrated per physical
-page, so production quizzes should be kept to one page per version until
-multi-page marking is added.
+`calibrate_coords()` reads every page of the rendered form, not just the
+first, and `check_scan_sequence()` / `aggregate_sheets()` (below) group a
+multi-page scan stack into one record per student before scoring. A
+single-page quiz needs none of that machinery — every page is already a
+whole sheet — so it stays the simplest case, but multi-page duplex forms are
+marked live, not just printed for review.
 
 ## Course Folder Layout
 
@@ -105,70 +125,14 @@ e. A p-value
 <!-- Answer A -- RMSE is expressed in the response variable's units. -->
 ```
 
-## Draft Questions From A Lecture
-
-For YouTube videos, install `yt-dlp` and let `bubblequiz` try captions first:
-
-```r
-transcribe_lecture(
-  "https://www.youtube.com/watch?v=Xrw0G-Pt1fI",
-  output = "output/transcript.txt"
-)
-```
-
-If captions are available, this does not use the audio transcription API. If no
-captions are available, it downloads audio and transcribes it.
-
-To overgenerate questions for instructor review:
-
-```r
-generate_question_candidates(
-  transcript = "output/transcript.txt",
-  config = "exam.yml",
-  output = "output/question_candidates.md",
-  n_candidates = 14
-)
-```
-
-Read `output/question_candidates.md`, choose the strongest candidate question
-numbers, then create the final quiz source:
-
-```r
-select_questions(
-  candidates = "output/question_candidates.md",
-  selected = c(2, 4, 5, 8, 11, 13),
-  output = "questions.md"
-)
-```
-
-To check a hand-written or selected quiz against the lecture transcript:
-
-```r
-check_questions_in_transcript(
-  questions = "questions.md",
-  transcript = "output/transcript.txt",
-  output = "output/question_coverage.csv"
-)
-```
-
-`question_coverage.csv` flags questions whose question text, answer, or core
-concept is not clearly supported by the lecture.
-
-The same workflow is available from the command line:
-
-```bash
-bubblequiz transcribe "https://www.youtube.com/watch?v=Xrw0G-Pt1fI"
-bubblequiz candidates --transcript output/transcript.txt --n-candidates 14
-bubblequiz select --selected 2,4,5,8,11,13
-bubblequiz verify --transcript output/transcript.txt
-```
-
 ## Build A Quiz
 
-From a course folder:
+Write `questions.md` by hand (or with whatever drafting tool you like — bubblequiz
+doesn't care how the questions were written, only that they follow the format
+above). From a course folder, with bubblequiz installed:
 
 ```r
-for (f in list.files("/path/to/bubblequiz/R", "[.]R$", full.names = TRUE)) source(f)
+library(bubblequiz)
 
 generate_versions("exam.yml", "questions.md", "output")
 make_quiz_forms("exam.yml", "output")
@@ -198,6 +162,64 @@ PDF output
 ```
 
 Students should use black or dark blue pen and fill bubbles completely.
+
+## How The Geometry Pipeline Works
+
+bubblequiz never looks at a scanned page and guesses where the bubbles are. It
+renders the form, measures its own rendering, and reads scans back against
+those exact measurements — the same trick a scantron machine did with a
+physical template, done here with pixels.
+
+**1. Every printed sheet carries four anchors.** A 5mm black square sits 3mm
+inside each corner of the page, plus a QR code carrying the course, version,
+and page number.
+
+<img src="man/figures/geometry-registration-mark.png" width="260" alt="One corner of a printed sheet, showing the solid black registration square inset from the edge">
+
+**2. `calibrate_coords()` reads the rendered PDF, not the LaTeX source.** It
+pulls the (x, y) position of every printed option letter straight out of the
+PDF's own text layer, clusters them into bubble rows and columns, and writes
+the result to `layout.R` — one set of coordinates, normalised 0–1 across the
+page, reused for every version and every scan of this quiz. A preview image
+confirms the fit by stamping each detected coordinate back onto the blank
+form:
+
+<img src="man/figures/geometry-calibration.png" width="260" alt="Close-up of a blank answer row with A B C D E stamped in red exactly on top of the printed bubbles">
+
+**3. A scan is just the same page, photographed.** Reading one back is a
+three-step lookup, not a model: find the four registration squares in the
+scanned image, fit a map from the calibrated page coordinates to this
+particular photo's pixel coordinates (correcting for the page having shifted,
+rotated, or scaled slightly in the scanner), then sample the ink darkness in
+a small circle at every bubble center that mapping predicts.
+
+<table>
+<tr>
+<td><img src="man/figures/geometry-bubble-blank.png" width="220" alt="Blank printed bubble row, options A through E"><br><sub>printed</sub></td>
+<td><img src="man/figures/geometry-bubble-filled.png" width="220" alt="Same row with bubble A filled in pen"><br><sub>filled in</sub></td>
+<td><img src="man/figures/geometry-bubble-marked.png" width="220" alt="Same row with A circled in orange by the marker, confirming the read"><br><sub>read back</sub></td>
+</tr>
+</table>
+
+**4. Each bubble is compared with its own blank.** The printed letter inside a
+circle is dark ink too, and different letters carry different amounts (a B has
+more than an A). So `calibrate_coords()` also records how dark every bubble is
+on the blank form, and a scan is read against that baseline: a bubble counts as
+filled only if it is clearly darker than its own unfilled level. Then the
+darkest bubble in a row wins, unless two are close. If two circles are both
+dark and close in ink score, the row is ambiguous and gets flagged rather than
+guessed at. The same ink-sampling approach reads the student-ID grid (one
+column of digit bubbles per ID digit) and, when `zbar` can't decode the page's
+QR code, falls back to matching the ink pattern against each version's
+expected answer key to recover the version number. Every marked page is
+written back out with its reading overlaid, so a human can audit the call at
+a glance — orange for confident, red for anything flagged:
+
+<img src="man/figures/geometry-marked-page.jpeg" width="640" alt="Full marked quiz page: filled zID grid, Q1/Q2/Q4 circled in orange, Q3 circled in red because a second bubble was also inked">
+
+In this example sheet, Q3 has a stray second mark next to the intended
+answer; both bubbles register enough ink to be ambiguous, so the row is
+circled in red and flagged for review rather than scored automatically.
 
 ## Check A Large Stack Before Marking
 
@@ -262,6 +284,10 @@ scans/results.csv         scores
 ```
 
 Rows needing manual review are flagged in `progress.csv` and `sheets.csv`.
+`mark_scans_cv()` currently marks every CV-read page `needs_review` as a
+conservative default — check the per-answer notes column (a trailing `*`
+marks the bubble-level ambiguity that actually matters) rather than treating
+every flagged row as equally uncertain.
 
 For a single-page form, `check_scan_sequence()` and `aggregate_sheets()` are
 harmless no-ops: every page is its own sheet and `sheets.csv` matches
@@ -315,12 +341,12 @@ With the current layout and moderately wordy questions:
 11+ questions: likely spills beyond one double-sided sheet
 ```
 
-Shorter questions fit better; longer questions may reduce the limit.
-
-For the current local CV marker, prefer a quiz that fits on one printed page
-per version. Multi-page/duplex print forms are useful for review and classroom
-handling, but the marker still needs page-aware aggregation before they should
-be used for live marking.
+Shorter questions fit better; longer questions may reduce the limit. Beyond
+that, a quiz simply runs to more pages — `calibrate_coords()` and
+`mark_scans_cv()` are page-aware, so a multi-page duplex form is marked the
+same way a single-page one is, just with `check_scan_sequence()` and
+`aggregate_sheets()` doing the extra bookkeeping of joining pages back into
+one sheet per student (see above).
 
 ## External Tools
 
