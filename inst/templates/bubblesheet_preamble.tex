@@ -17,9 +17,22 @@
 \usepackage{fontspec}
 \setmainfont{Helvetica Neue}
 \usepackage{tikz}
+\usepackage{eso-pic}
+\usepackage{lastpage}
+\usepackage{refcount}
+\usepackage[nolinks]{qrcode}
 \usepackage{xcolor}
 \definecolor{shadedbg}{gray}{0.88}
 \definecolor{versionbg}{gray}{0.15}
+
+% Per-page QR payload. \bqpagepayloadbase (course|version|questions) is \def'd
+% by the generated bubblesheet_v<N>.tex before this file is \input; page and
+% pages are expanded at shipout, so every page identifies itself the same way
+% the inline quiz form does -- a scanned stack can be checked and reordered
+% without relying on scan order.
+\providecommand{\bqpagepayloadbase}{bubblequiz}
+\newcommand{\bqpagepayload}{\bqpagepayloadbase|page=\the\value{page}|pages=\getpagerefnumber{LastPage}}
+\newcommand{\bqpageqr}{\expanded{\noexpand\qrcode[height=1.3cm]{\bqpagepayload}}}
 
 \providecommand{\examversion}{?}
 
@@ -28,10 +41,14 @@
 \setlength{\parindent}{0pt}
 
 %── Answer bubble: 7 mm circle with letter centred ───────────────────────────
+%   Font size matches the inline form's \bub macro (R/paper.R) exactly: the
+%   marker's ink-sampling thresholds are tuned against that baseline, and a
+%   visibly larger glyph (this was 8.5pt) reads enough ink on its own to be
+%   mistaken for a filled bubble even when the row is blank.
 \newcommand{\bub}[1]{%
   \begin{tikzpicture}[baseline=-0.6ex]
     \draw[line width=1.2pt](0,0) circle (8pt);
-    \node[font=\fontsize{8.5}{8.5}\selectfont\bfseries] at (0,0){#1};
+    \node[font=\fontsize{7.2}{7.2}\selectfont\bfseries] at (0,0){#1};
   \end{tikzpicture}%
   \hspace{4pt}%
 }
@@ -56,16 +73,24 @@
   }}\par\vspace{3pt}%
 }
 
-\begin{document}
-
-%── Registration marks: solid 8 mm squares in each corner (OMR anchors) ──────
-%   Squares preferred over circles: sharp corners give precise skew correction.
+% Registration marks (5mm squares, OMR anchors) and the per-page QR go in the
+% shipout background so they are drawn on EVERY page, not just the first --
+% this sheet can run to 2 pages and the marker needs anchors on both. Squares
+% are preferred over circles: sharp corners give precise skew correction. Page
+% number on every page, plus a name line on pages after the first: page 1
+% already carries the name field in the header above, but a sheet that comes
+% apart in the scanner needs somewhere to attribute a later page to a student.
+\AddToShipoutPictureBG{%
 \begin{tikzpicture}[remember picture, overlay]
   \fill[black] ([xshift= 3mm, yshift= -3mm]current page.north west) rectangle ++( 5mm, -5mm);
   \fill[black] ([xshift=-8mm, yshift= -3mm]current page.north east) rectangle ++( 5mm, -5mm);
   \fill[black] ([xshift= 3mm, yshift=  3mm]current page.south west) rectangle ++( 5mm,  5mm);
   \fill[black] ([xshift=-8mm, yshift=  3mm]current page.south east) rectangle ++( 5mm,  5mm);
-\end{tikzpicture}
+  \node[anchor=south west, inner sep=0pt, font=\footnotesize] at ([xshift=11mm, yshift=4mm]current page.south west) {\ifnum\value{page}>1 \textbf{Name}~\underline{\hspace{55mm}}\quad\fi Page \thepage\ of \pageref{LastPage}};
+  \node[anchor=south east, inner sep=0pt] at ([xshift=-12mm, yshift=3mm]current page.south east) {\bqpageqr};
+\end{tikzpicture}}
+
+\begin{document}
 
 %── Title block ───────────────────────────────────────────────────────────────
 \noindent{\LARGE\bfseries \examtitle}%

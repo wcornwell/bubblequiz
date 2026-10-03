@@ -505,8 +505,16 @@ load_id_grid_from_form <- function(form_pdf, cfg) {
   txt <- pdftools::pdf_data(form_pdf, font_info = TRUE)[[1]]
   txt$xc <- (txt$x + txt$width / 2) / PAGE_W
   txt$yc <- (txt$y + txt$height / 2) / PAGE_H
-  digits <- txt[txt$text %in% as.character(0:9) &
-                  txt$font_size < 7, , drop = FALSE]
+
+  # The digit grid prints cfg$id$digits * 10 digits at one shared font size;
+  # anything else with a lone digit (a date, "Page 1 of 2") is vastly
+  # outnumbered, so the most common font size among digit text is the grid's,
+  # whatever its absolute point size happens to be for this template.
+  digit_candidates <- txt[txt$text %in% as.character(0:9), , drop = FALSE]
+  if (nrow(digit_candidates) == 0) return(NULL)
+  size_counts <- table(round(digit_candidates$font_size, 1))
+  grid_size   <- as.numeric(names(size_counts)[which.max(size_counts)])
+  digits <- digit_candidates[abs(digit_candidates$font_size - grid_size) < 0.5, , drop = FALSE]
   if (nrow(digits) < cfg$id$digits * 10) return(NULL)
 
   x_centers <- sort(unique(round(digits$xc, 4)))

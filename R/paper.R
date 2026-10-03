@@ -1,72 +1,72 @@
 # paper.R -- render generated question-paper markdown to printable PDFs.
 
-paper_wrapper <- function(cfg, source_md, style_file) {
-  body <- readLines(source_md, warn = FALSE)
+latex_question_paper <- function(cfg, blocks, version) {
+  question_tex <- unlist(lapply(blocks, function(q) {
+    opts <- q$options[tolower(cfg$options)]
+    if (any(is.na(opts))) {
+      stop("Question ", q$number, " is missing one or more options.", call. = FALSE)
+    }
+    c(
+      sprintf("\\textbf{Q%d.} %s\\par", q$number, tex_escape(q$question)),
+      "\\begin{enumerate}[label=\\alph*., leftmargin=1.8em]",
+      sprintf("  \\item %s", tex_escape(opts)),
+      "\\end{enumerate}",
+      "\\vspace{4pt}"
+    )
+  }), use.names = FALSE)
+
   c(
-    "---",
-    sprintf("title: \"%s\"", gsub("\"", "\\\\\"", cfg$title)),
-    "format:",
-    "  pdf:",
-    "    pdf-engine: xelatex",
-    sprintf("    include-in-header: %s", basename(style_file)),
-    "---",
-    "",
-    body
+    "\\documentclass[11pt, a4paper]{article}",
+    "\\usepackage[a4paper, left=1.8cm, right=1.8cm, top=1.4cm, bottom=1.4cm]{geometry}",
+    "\\usepackage{fontspec}",
+    "\\setmainfont{Helvetica Neue}",
+    "\\usepackage{enumitem}",
+    "\\setlength{\\parindent}{0pt}",
+    "\\setlength{\\parskip}{2pt}",
+    "\\begin{document}",
+    sprintf("\\noindent{\\LARGE\\bfseries %s}\\hfill{\\large\\bfseries Version %s}\\\\[1pt]",
+            tex_escape(cfg$title), tex_escape(version)),
+    sprintf("{\\normalsize %s}\\\\[2pt]", tex_escape(cfg$subtitle)),
+    "\\rule{\\linewidth}{1pt}",
+    "\\vspace{6pt}",
+    question_tex,
+    "\\end{document}"
   )
 }
 
 #' Render generated question papers to PDF
 #'
-#' Converts `questions_v*.md` files from [generate_versions()] into PDFs using
-#' Quarto and the package's compact exam style.
+#' Converts `questions_v*.md` files from [generate_versions()] into a plain
+#' flowing question-only document per version -- no bubbles, no registration
+#' marks, no QR, because this document is never scanned. Paired with
+#' [make_bubblesheet()], which renders the separate, scannable bubble-only
+#' answer sheet. Unlike the answer sheet, this document has no page cap: it can
+#' run to as many pages as the quiz needs.
 #'
 #' @param config Path to the exam config YAML, or a loaded config list.
 #' @param outdir Directory containing `questions_v*.md`.
-#' @return Invisibly, the rendered PDF paths.
+#' @return Invisibly, the written `.tex` and `.pdf` paths.
 #' @export
 render_papers <- function(config = default_config_path(), outdir = "output") {
   cfg <- if (is.list(config)) config else load_exam_config(config)
   if (!dir.exists(outdir)) stop("Output directory not found: ", outdir, call. = FALSE)
 
-  md_files <- list.files(outdir, pattern = "^questions_v[0-9]+\\.md$",
-                         full.names = TRUE)
-  if (length(md_files) == 0) {
-    stop("No generated question files found in ", outdir,
-         "\nRun `bubblequiz versions` first.", call. = FALSE)
-  }
-  if (Sys.which("quarto") == "") {
-    stop("quarto was not found on PATH; install Quarto to render paper PDFs.",
-         call. = FALSE)
-  }
-
-  style_src <- bq_file("templates", "style.tex")
-  style_dst <- file.path(outdir, "style.tex")
-  file.copy(style_src, style_dst, overwrite = TRUE)
-
-  rendered <- character(0)
-  old_wd <- setwd(normalizePath(outdir))
-  on.exit(setwd(old_wd), add = TRUE)
-
-  for (md in md_files) {
-    base <- tools::file_path_sans_ext(basename(md))
-    qmd <- paste0(base, ".qmd")
-    pdf <- paste0(base, ".pdf")
-    writeLines(paper_wrapper(cfg, basename(md), style_dst), qmd)
-
-    message("Rendering: ", file.path(outdir, qmd))
-    status <- system2("quarto", c("render", qmd, "--to", "pdf"), stdout = FALSE)
-    if (!identical(status, 0L)) {
-      stop("quarto failed while rendering ", qmd, call. = FALSE)
+  written <- character(0)
+  for (v in cfg$valid_versions) {
+    md <- file.path(outdir, sprintf("questions_v%s.md", v))
+    if (!file.exists(md)) {
+      stop("Question version not found: ", md,
+           "\nRun `bubblequiz versions` first.", call. = FALSE)
     }
-    if (!file.exists(pdf)) {
-      stop("quarto did not write expected PDF: ", file.path(outdir, pdf),
-           call. = FALSE)
-    }
-    rendered <- c(rendered, file.path(outdir, pdf))
-    message("Wrote: ", file.path(outdir, pdf))
+    blocks <- parse_question_blocks(md, cfg)
+    tex_path <- file.path(outdir, sprintf("questions_v%s.tex", v))
+    writeLines(latex_question_paper(cfg, blocks, v), tex_path)
+    written <- c(written, tex_path)
+    message("Wrote: ", tex_path)
+    written <- c(written, render_xelatex(tex_path, outdir))
   }
 
-  invisible(rendered)
+  invisible(written)
 }
 
 parse_question_blocks <- function(path, cfg) {
@@ -252,7 +252,11 @@ make_quiz_forms <- function(config = default_config_path(),
     writeLines(latex_inline_quiz(cfg, blocks, v), tex_path)
     written <- c(written, tex_path)
     message("Wrote: ", tex_path)
-    if (render) written <- c(written, render_xelatex(tex_path, outdir))
+    if (render) {
+      pdf_path <- render_xelatex(tex_path, outdir)
+      written <- c(written, pdf_path)
+      enforce_page_cap(pdf_path, v)
+    }
   }
   invisible(written)
 }
