@@ -15,6 +15,6 @@ A list describing the exam; see `vignette`-free docs in README.
 \description{
 Reads the YAML exam config and derives everything downstream needs: the MCQ
 question list (essay questions excluded), the version labels, the row/column
-layout of the printed sheet, and the vision prompt. Every other function in
+layout of the printed sheet. Every other function in
 the package takes the result of this rather than hard-coding exam shape.
 }
