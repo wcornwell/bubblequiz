@@ -62,15 +62,6 @@ got_rows <- lapply(cfg$bubble_rows, function(r) {
 })
 check("ROW_QUESTION_MAP (14 bubble rows)", got_rows, want_rows)
 
-# --- Vision prompt sanity --------------------------------------------------
-vp <- cfg$vision_prompt
-check("prompt states 25 answer rows", grepl("Read all 25 answer rows", vp), TRUE)
-check("prompt lists section ranges",
-      grepl("Q1-Q10 \\(Section A\\), Q11-Q15 \\(Section B\\), Q17-Q21 \\(Section C\\), Q22-Q26 \\(Section D\\)", vp),
-      TRUE)
-check("prompt flags essay questions", grepl("Q16 and Q27 are essay questions", vp), TRUE)
-check("prompt has no BEES2041-specific leftovers", grepl("BEES", vp), FALSE)
-
 # --- Validation catches bad configs ----------------------------------------
 expect_error <- function(label, expr) {
   ok <- inherits(try(expr, silent = TRUE), "try-error")

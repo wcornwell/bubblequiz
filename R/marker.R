@@ -1,14 +1,12 @@
-# marker.R -- read scanned bubble sheets with the Claude vision API.
+# marker.R -- read scanned bubble sheets with local, deterministic computer
+# vision. No network call, no API key: every bubble is read by sampling ink
+# darkness at its calibrated center and classifying the darkest circle in each
+# row. Each page is written out annotated so a human can audit what was
+# recorded.
 #
-# The API does the reading; the pixels do the checking. Every page is also
-# scanned directly for ink at each bubble centre, and an answer the model
-# reports is overridden when the pixels clearly disagree (see
-# enforce_blank_rows_from_scan). Each page is written out annotated so a human
-# can audit what was recorded.
-#
-# Nothing here knows about a particular exam: question numbers, option letters
-# and the vision prompt all come from the config, and bubble coordinates come
-# from the calibrated layout file.
+# Nothing here knows about a particular exam: question numbers and option
+# letters come from the config, and bubble coordinates come from the
+# calibrated layout file.
 
 # Registration-mark centres in template space (normalised 0-1): 5mm squares
 # inset 3mm from each corner of an A4 page, as drawn by the sheet preamble.
@@ -311,83 +309,6 @@ build_map_xy <- function(img_path) {
     },
     marker_ok  = !is.null(marker_pts)
   )
-}
-
-# ---------------------------------------------------------------------------
-# enforce_blank_rows_from_scan: detect likely blank answer rows directly from
-# scan pixels. If a row has no dark center in any bubble, force answer to "".
-# ---------------------------------------------------------------------------
-enforce_blank_rows_from_scan <- function(img_path, parsed, cfg, layout) {
-  if (!isTRUE(parsed$ok)) return(parsed)
-
-  ctx    <- build_map_xy(img_path)
-  w      <- ctx$w
-  h      <- ctx$h
-  gray   <- ctx$gray
-  map_xy <- ctx$map_xy
-
-  center_r <- max(2L, as.integer(w * 0.0022))
-  center_ink <- function(cx, cy) {
-    x1 <- max(1L, cx - center_r)
-    x2 <- min(w,  cx + center_r)
-    y1 <- max(1L, cy - center_r)
-    y2 <- min(h,  cy + center_r)
-    255 - mean(gray[y1:y2, x1:x2, drop = FALSE], na.rm = TRUE)
-  }
-
-  forced_blank <- integer(0)
-
-  for (q in cfg$questions) {
-    q_chr <- as.character(q)
-    col   <- layout$QUESTION_COL[q_chr]
-    y_pos <- layout$QUESTION_Y[q_chr]
-    if (is.null(col) || is.null(y_pos) || is.na(col) || is.na(y_pos)) next
-
-    inks <- vapply(cfg$options, function(letter) {
-      x_pos <- layout$ANSWER_X[[col]][letter]
-      if (is.null(x_pos) || is.na(x_pos)) return(0)
-      pt <- map_xy(x_pos, y_pos)
-      cx <- as.integer(pt["x"])
-      cy <- as.integer(pt["y"])
-      center_ink(cx, cy)
-    }, numeric(1))
-
-    if (!all(is.finite(inks))) next
-
-    ranked <- sort(inks, decreasing = TRUE)
-    top_ink <- ranked[1]
-    second_ink <- ranked[2]
-    spread <- max(inks, na.rm = TRUE) - min(inks, na.rm = TRUE)
-    top_letter <- names(which.max(inks))[1]
-
-    raw_ans <- parsed$answers[[q_chr]]
-    ans_base <- toupper(trimws(sub("\\*$", "", as.character(raw_ans)[1])))
-    model_has_letter <- nzchar(ans_base) && ans_base %in% cfg$options
-    model_disagrees <- model_has_letter && ans_base != top_letter
-
-    # Rule 1: all centers are very light -> likely genuinely blank row.
-    low_signal_blank <- top_ink < 65
-
-    # Rule 2: no clear dominant bubble and model choice disagrees with pixel winner.
-    # Keep this conservative so darker/strongly marked rows are not blanked.
-    weak_dominance <- (top_ink - second_ink) < 20 && spread < 36 && top_ink < 141
-
-    if (low_signal_blank || (weak_dominance && model_disagrees)) {
-      parsed$answers[[q_chr]] <- ""
-      forced_blank <- c(forced_blank, q)
-    }
-  }
-
-  if (length(forced_blank) > 0) {
-    add_note <- paste0("Pixel blank-check forced blank: Q", paste(forced_blank, collapse = ", Q"))
-    if (is.null(parsed$notes) || nchar(trimws(parsed$notes)) == 0) {
-      parsed$notes <- add_note
-    } else if (!grepl(add_note, parsed$notes, fixed = TRUE)) {
-      parsed$notes <- paste(parsed$notes, add_note, sep = " | ")
-    }
-  }
-
-  parsed
 }
 
 # ---------------------------------------------------------------------------
@@ -918,131 +839,3 @@ update_progress_row <- function(progress, idx, parsed, cfg, api_call_ok = TRUE) 
   progress
 }
 
-# ---------------------------------------------------------------------------
-# mark_scans: main processing loop
-# ---------------------------------------------------------------------------
-
-#' Mark scanned bubble sheets
-#'
-#' Works through `progress.csv` a page at a time, saving after every page, so
-#' an interrupted run resumes where it stopped: pages already marked `done` are
-#' skipped on the next call. Every page is also written to `marked/` with the
-#' recorded answer drawn on each bubble (orange = confident, red = uncertain).
-#'
-#' @param dir Folder created by [preprocess_scans()].
-#' @param config Path to the exam config YAML, or a loaded config list.
-#' @param layout Path to the calibrated layout file, or a loaded layout list.
-#' @param model Anthropic model ID.
-#' @param api_key Anthropic API key; defaults to `$ANTHROPIC_API_KEY`.
-#' @param dry_run Process only the first 3 pending pages.
-#' @return Invisibly, the updated progress data frame.
-#' @export
-mark_scans <- function(dir,
-                       config  = default_config_path(),
-                       layout  = "output/layout.R",
-                       model   = "claude-sonnet-4-6",
-                       api_key = Sys.getenv("ANTHROPIC_API_KEY"),
-                       dry_run = FALSE) {
-  if (!dir.exists(dir)) stop("Directory not found: ", dir, call. = FALSE)
-  if (!nzchar(api_key)) {
-    stop("ANTHROPIC_API_KEY is not set. Export it, or pass api_key =.", call. = FALSE)
-  }
-  cfg    <- if (is.list(config)) config else load_exam_config(config)
-  layout <- if (is.list(layout)) layout else load_layout(layout)
-
-  csv_path   <- file.path(dir, "progress.csv")
-  if (!file.exists(csv_path)) {
-    stop("progress.csv not found in ", dir,
-         " -- run `bubblequiz preprocess` first.", call. = FALSE)
-  }
-  marked_dir <- file.path(dir, "marked")
-  dir.create(marked_dir, showWarnings = FALSE)
-
-  message("Loading progress CSV: ", csv_path)
-  progress <- readr::read_csv(csv_path, show_col_types = FALSE)
-
-  if (!("name" %in% names(progress))) {
-    progress$name <- NA_character_
-  }
-
-  n_done     <- sum(progress$status == "done", na.rm = TRUE)
-  to_process <- which(progress$status != "done")
-
-  if (isTRUE(dry_run)) {
-    message("-- dry run: processing the first 3 pending pages only --")
-    to_process <- utils::head(to_process, 3)
-  }
-
-  message(sprintf("Pages total: %d  |  already done: %d  |  to process: %d",
-                  nrow(progress), n_done, length(to_process)))
-
-  for (idx in to_process) {
-    page_num <- progress$page[idx]
-    img_path <- file.path(dir, progress$file[idx])
-    message(sprintf("  Page %d / %d  [%s] ...", page_num, nrow(progress), progress$file[idx]))
-
-    raw <- tryCatch(
-      call_claude(img_path, model, api_key, cfg$vision_prompt),
-      error = function(e) {
-        msg <- conditionMessage(e)
-        if (inherits(e, "httr2_http")) {
-          detail <- tryCatch(
-            httr2::resp_body_json(e$resp)$error$message,
-            error = function(e2) tryCatch(httr2::resp_body_string(e$resp), error = function(e3) NULL)
-          )
-          if (!is.null(detail)) msg <- paste0(msg, "\n      Detail: ", detail)
-        }
-        message("    API error: ", msg)
-        NULL
-      }
-    )
-
-    if (is.null(raw)) {
-      progress$status[idx]       <- "error"
-      progress$api_call_ok[idx]  <- FALSE
-      progress$needs_review[idx] <- TRUE
-      progress$error[idx]        <- "API call failed"
-      progress <- save_progress(progress, idx, csv_path)
-      tryCatch(
-        annotate_page(img_path, list(ok = FALSE, error = "API call failed"), marked_dir,
-                      cfg, layout),
-        error = function(e) message("    [annotate] failed: ", conditionMessage(e))
-      )
-      next
-    }
-
-    parsed <- parse_response(raw, page_num, cfg)
-    parsed <- enforce_blank_rows_from_scan(img_path, parsed, cfg, layout)
-
-    if (!parsed$ok) {
-      message("    Parse/validation error: ", parsed$error)
-    } else {
-      if (any(grepl("\\*$", as.character(parsed$answers), perl = TRUE), na.rm = TRUE)) {
-        message("    Uncertain question(s) flagged with '*': ", parsed$notes)
-      }
-      message(sprintf("    zID: %s  version: %s", parsed$zid, parsed$exam_version))
-    }
-
-    progress <- update_progress_row(progress, idx, parsed, cfg)
-    progress <- save_progress(progress, idx, csv_path)
-    tryCatch(
-      annotate_page(img_path, parsed, marked_dir, cfg, layout),
-      error = function(e) message("    [annotate] failed: ", conditionMessage(e))
-    )
-  }
-
-  # Summary
-  results_df <- progress[progress$status == "done", , drop = FALSE]
-  n_ok      <- nrow(results_df)
-  n_error   <- sum(progress$status == "error",   na.rm = TRUE)
-  n_review  <- sum(progress$needs_review == TRUE, na.rm = TRUE)
-
-  cat("\n========================================\n")
-  cat(sprintf("Students processed : %d\n", n_ok))
-  cat(sprintf("Errors             : %d\n", n_error))
-  cat(sprintf("Needs manual review: %d  (see needs_review column in progress.csv)\n", n_review))
-  cat(sprintf("Next: bubblequiz score --dir \"%s\"\n", dir))
-  cat("========================================\n")
-
-  invisible(progress)
-}

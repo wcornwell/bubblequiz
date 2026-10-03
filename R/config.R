@@ -64,104 +64,6 @@ layout_section <- function(items, n_cols) {
 }
 
 # ---------------------------------------------------------------------------
-# Vision prompt, built from the config so the wording always matches the sheet
-# ---------------------------------------------------------------------------
-build_vision_prompt <- function(cfg) {
-  opt_first <- cfg$options[1]
-  opt_last  <- cfg$options[length(cfg$options)]
-  opt_range <- paste0(opt_first, "-", opt_last)
-
-  # "Q1-Q10 (Section A), Q11-Q15 (Section B), ..." -- contiguous runs collapsed.
-  section_desc <- vapply(cfg$sections, function(s) {
-    qs <- sort(as.integer(s$questions))
-    if (length(qs) == 0) return(NA_character_)
-    breaks <- c(0, which(diff(qs) != 1), length(qs))
-    runs <- vapply(seq_len(length(breaks) - 1), function(i) {
-      run <- qs[(breaks[i] + 1):breaks[i + 1]]
-      if (length(run) == 1) sprintf("Q%d", run) else sprintf("Q%d-Q%d", min(run), max(run))
-    }, character(1))
-    sprintf("%s (Section %s)", paste(runs, collapse = ", "), s$id)
-  }, character(1))
-  section_desc <- paste(section_desc[!is.na(section_desc)], collapse = ", ")
-
-  essay_note <- if (length(cfg$essay_questions) > 0) {
-    sprintf(
-      "   Note: %s %s essay question%s and %s NOT present on this sheet.",
-      paste0("Q", cfg$essay_questions, collapse = " and "),
-      if (length(cfg$essay_questions) == 1) "is an" else "are",
-      if (length(cfg$essay_questions) == 1) "" else "s",
-      if (length(cfg$essay_questions) == 1) "is" else "are"
-    )
-  } else ""
-
-  # JSON schema example: every expected question with a plausible answer.
-  ex_answers <- vapply(seq_along(cfg$questions), function(i) {
-    sprintf('"%d": "%s"', cfg$questions[i],
-            cfg$options[(i %% length(cfg$options)) + 1])
-  }, character(1))
-  # 5 per line for readability
-  ex_lines <- vapply(seq(1, length(ex_answers), by = 5), function(start) {
-    chunk <- ex_answers[start:min(start + 4, length(ex_answers))]
-    paste0("    ", paste(chunk, collapse = ", "))
-  }, character(1))
-  ex_block <- paste(ex_lines, collapse = ",\n")
-
-  id_digits <- cfg$id$digits
-  id_prefix <- cfg$id$prefix
-  id_label  <- cfg$id$label
-  id_example <- paste0(id_prefix, paste(rep("1234567890", 2), collapse = ""))
-  id_example <- substr(id_example, 1, nchar(id_prefix) + id_digits)
-
-  version_list <- paste(cfg$valid_versions, collapse = ", ")
-
-  sprintf('
-You are grading a university exam bubble sheet. Analyse the image carefully and return ONLY a single JSON object -- no prose, no markdown fences.
-
-Instructions:
-1. EXAM VERSION: Read the large bold printed text in the top-right header of the sheet (e.g. "Version 2"). Extract only the digit (%s) as a string.
-
-2. %s: Read the %d-column x 10-row bubble grid. Each column encodes one digit (0-9); the student fills exactly one bubble per column. Combine the %d digits to form the %s (always starts with "%s", e.g. "%s"). Cross-check against the handwritten %s field above the grid.
-
-3. NAME: Read the handwritten student name from the name field and return it exactly as written (trim outer whitespace only).
-
-4. MCQ ANSWERS: Read all %d answer rows in this exact order:
-   %s.
-%s
-  For each question:
-  - If exactly one bubble is clearly filled, record the single letter (%s).
-  - If the entire row is blank (no bubble filled), return an empty string "" for that question.
-
-5. AMBIGUITY: If any bubble is double-filled, partially erased, or genuinely unclear:
-  - Record your best guess for that question and append "*" (e.g. "%s*").
-  - Describe the issue in "notes".
-  - Use plain letters %s only for confident reads.
-
-6. BLANK-ROW RULE: If one or more answer rows are blank, still return all %d questions in
-  "answers" with "" for the blank rows. Mention which question numbers are blank in
-  "notes".
-
-Return exactly this JSON schema (keys must match exactly):
-{
-  "%s": "%s",
-  "name": "Jane Citizen",
-  "exam_version": "%s",
-  "answers": {
-%s
-  },
-  "confidence": "high",
-  "notes": ""
-}
-',
-    version_list,
-    toupper(id_label), id_digits, id_digits, id_label, id_prefix, id_example, id_label,
-    length(cfg$questions), section_desc, essay_note,
-    opt_range, cfg$options[3], opt_range,
-    length(cfg$questions),
-    tolower(id_label), id_example, cfg$valid_versions[1], ex_block
-  )
-}
-
-# ---------------------------------------------------------------------------
 # Validation -- fail loudly on the mistakes that silently corrupt a marking run
 # ---------------------------------------------------------------------------
 validate_exam_config <- function(cfg) {
@@ -325,7 +227,6 @@ load_exam_config <- function(path = default_config_path()) {
     any(vapply(r, function(q) q %in% cfg$questions, logical(1)))
   }, rows)
 
-  cfg$vision_prompt <- build_vision_prompt(cfg)
   cfg
 }
 

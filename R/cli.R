@@ -22,8 +22,7 @@ Commands:
   forms-all                 combine quizform_v*.pdf into one print PDF
   build                     versions + inline forms + calibrate
   preprocess <scan.pdf>     scanned PDF  -> page images + progress.csv
-  mark --dir <folder>       grade scanned pages with the Claude vision API
-  mark-cv --dir <folder>    read calibrated bubbles without an API call
+  mark-cv --dir <folder>    read calibrated bubbles locally, no API call
   score --dir <folder>      progress.csv + answer_key.csv -> results.csv
   check                     validate exam.yml and report the derived layout
 
@@ -33,12 +32,9 @@ Common options:
   --questions <path>  Question source markdown  [default: questions.md]
   --layout <path>     Calibrated layout file    [default: output/layout.R]
   --key <path>        Answer key CSV            [default: output/answer_key.csv]
-  --model <id>        Anthropic model           [default: claude-sonnet-4-6]
   --dpi <n>           Scan rasterisation DPI    [default: 150]
   --dry-run           Mark only the first 3 pending pages
   --force             Re-extract scans over an existing folder
-
-Marking needs ANTHROPIC_API_KEY in the environment.
 ")
 }
 
@@ -126,13 +122,6 @@ bq_cli <- function(args = commandArgs(trailingOnly = TRUE)) {
       preprocess_scans(pos[1], config,
                        dpi   = as.integer(o$dpi %||% 150),
                        force = isTRUE(o$force))
-    },
-
-    "mark" = {
-      if (is.null(o$dir)) stop("Usage: bubblequiz mark --dir <folder>", call. = FALSE)
-      mark_scans(o$dir, config, layout,
-                 model   = o$model %||% "claude-sonnet-4-6",
-                 dry_run = isTRUE(o[["dry-run"]]))
     },
 
     "mark-cv" = {
