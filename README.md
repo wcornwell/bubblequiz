@@ -125,6 +125,23 @@ e. A p-value
 <!-- Answer A -- RMSE is expressed in the response variable's units. -->
 ```
 
+### Figures and math
+
+A question can show one figure, on its own line between the stem and the options:
+
+```markdown
+![Fig. 2 from Smith et al. (2021). Reproduced with permission.](figures/fig2.png){width=0.7}
+```
+
+The path is relative to `questions.md`; `width` is a fraction of the text width
+(default 0.8); the caption is printed under the figure. Figures are capped in
+height by `layout.figure_max_height` in `exam.yml` (default `7cm`). On inline quiz
+forms remember the 2-page cap: figures use space.
+
+`$...$` in stems, options and captions is typeset as math (`$R^2$`, `$p < 0.05$`).
+Dollar signs that do not pair up as math (`costs $5 and $10`) stay literal, and
+`\$` is always a literal dollar sign. Everything else is escaped as before.
+
 ## Build A Quiz
 
 Write `questions.md` by hand (or with whatever drafting tool you like — bubblequiz

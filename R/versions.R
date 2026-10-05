@@ -75,6 +75,29 @@ update_answer_comment <- function(comment_line, inv, opts_lower) {
   sub("Answer .", paste0("Answer ", new_letter), comment_line)
 }
 
+# Path of `target` as seen from directory `from` ("../figures/a.png").
+relative_path <- function(target, from) {
+  t <- strsplit(normalizePath(target, mustWork = FALSE), "/", fixed = TRUE)[[1]]
+  f <- strsplit(normalizePath(from, mustWork = FALSE), "/", fixed = TRUE)[[1]]
+  n <- 0L
+  while (n < min(length(t), length(f)) && identical(t[n + 1L], f[n + 1L])) n <- n + 1L
+  paste(c(rep("..", length(f) - n), t[-seq_len(n)]), collapse = "/")
+}
+
+# Figure lines (`![caption](path){width=..}`) hold paths relative to the source
+# questions.md. The shuffled copies live in `outdir`, so re-point those paths
+# there; otherwise every figure would break the moment it is rendered.
+relativise_figure_paths <- function(lines, from_dir, to_dir) {
+  is_fig <- grepl(figure_line_regex, lines, perl = TRUE)
+  for (i in which(is_fig)) {
+    path <- sub(figure_line_regex, "\\2", lines[i], perl = TRUE)
+    if (grepl("^(/|[A-Za-z]:)", path)) next
+    new_path <- relative_path(file.path(from_dir, path), to_dir)
+    lines[i] <- sub(paste0("](", path, ")"), paste0("](", new_path, ")"), lines[i], fixed = TRUE)
+  }
+  lines
+}
+
 # Walk every line, detect option blocks in either supported format, reorder the
 # options and update the matching answer comment.
 process_version <- function(lines, perm, version_label, opts_lower) {
@@ -186,6 +209,7 @@ generate_versions <- function(config = default_config_path(),
     label <- sub("^v", "", vname)
 
     out  <- process_version(lines, perm, label, opts_lower)
+    out  <- relativise_figure_paths(out, dirname(questions), outdir)
     path <- file.path(outdir, paste0("questions_", vname, ".md"))
     writeLines(out, path)
     message("Wrote: ", path)

@@ -20,6 +20,40 @@ tex_escape <- function(x) {
   x
 }
 
+# Like tex_escape(), but passes `$...$` spans through as LaTeX math. Pandoc's
+# rule decides what counts as math, so prices stay literal: the opening `$`
+# must be followed by a non-space, the closing `$` preceded by a non-space and
+# not followed by a digit. `\$` is a literal dollar sign. Inside math only `%`
+# and `#` are escaped (a stray `%` would comment out the rest of the line).
+# Anything that does not pair up is escaped exactly as tex_escape() would.
+tex_escape_math <- function(x) {
+  x <- as.character(x)
+  math_re <- "(?<!\\\\)\\$(?=[^\\s$])(?:[^$\\\\]|\\\\.)*?(?<=[^\\s\\\\])\\$(?![0-9])"
+  escape_outside <- function(txt) {
+    txt <- gsub("\\$", "\001", txt, fixed = TRUE)
+    txt <- tex_escape(txt)
+    gsub("\001", "\\$", txt, fixed = TRUE)
+  }
+  vapply(x, function(s) {
+    if (is.na(s)) return(NA_character_)
+    m <- gregexpr(math_re, s, perl = TRUE)[[1]]
+    if (m[1] == -1L) return(escape_outside(s))
+    starts <- as.integer(m)
+    ends   <- starts + attr(m, "match.length") - 1L
+    out <- character(0)
+    pos <- 1L
+    for (k in seq_along(starts)) {
+      if (starts[k] > pos) out <- c(out, escape_outside(substr(s, pos, starts[k] - 1L)))
+      span <- substr(s, starts[k], ends[k])
+      span <- gsub("(?<!\\\\)([%#])", "\\\\\\1", span, perl = TRUE)
+      out <- c(out, span)
+      pos <- ends[k] + 1L
+    }
+    if (pos <= nchar(s)) out <- c(out, escape_outside(substr(s, pos, nchar(s))))
+    paste(out, collapse = "")
+  }, character(1), USE.NAMES = FALSE)
+}
+
 # \bub{A}\bub{B}... for one answer row
 bubbles_tex <- function(cfg) {
   paste0(sprintf("\\bub{%s}", cfg$options), collapse = "")

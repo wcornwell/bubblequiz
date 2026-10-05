@@ -1,5 +1,27 @@
 # paper.R -- render generated question-paper markdown to printable PDFs.
 
+# A figure line sits between a question's stem and its options:
+#   ![caption](path/to/figure.png){width=0.7}
+# `width` is a fraction of the text width (default 0.8). Paths are relative to
+# the markdown file that contains them.
+figure_line_regex <- "^!\\[(.*)\\]\\(([^)]+)\\)(?:\\{width=([0-9.]+)\\})?\\s*$"
+
+figure_tex <- function(fig, max_height = "7cm") {
+  if (is.null(fig)) return(character(0))
+  max_height <- max_height %||% "7cm"
+  c(
+    "\\begin{center}",
+    sprintf("\\includegraphics[width=%.2f\\linewidth, height=%s, keepaspectratio]{%s}",
+            fig$width, max_height, fig$path),
+    if (nzchar(fig$caption)) sprintf("\\\\[2pt]{\\footnotesize %s}", tex_escape_math(fig$caption)),
+    "\\end{center}"
+  )
+}
+
+has_figures <- function(blocks) {
+  any(vapply(blocks, function(q) !is.null(q$figure), logical(1)))
+}
+
 latex_question_paper <- function(cfg, blocks, version) {
   question_tex <- unlist(lapply(blocks, function(q) {
     opts <- q$options[tolower(cfg$options)]
@@ -7,9 +29,10 @@ latex_question_paper <- function(cfg, blocks, version) {
       stop("Question ", q$number, " is missing one or more options.", call. = FALSE)
     }
     c(
-      sprintf("\\textbf{Q%d.} %s\\par", q$number, tex_escape(q$question)),
+      sprintf("\\textbf{Q%d.} %s\\par", q$number, tex_escape_math(q$question)),
+      figure_tex(q$figure, cfg$figure_max_height),
       "\\begin{enumerate}[label=\\alph*., leftmargin=1.8em]",
-      sprintf("  \\item %s", tex_escape(opts)),
+      sprintf("  \\item %s", tex_escape_math(opts)),
       "\\end{enumerate}",
       "\\vspace{4pt}"
     )
@@ -21,6 +44,7 @@ latex_question_paper <- function(cfg, blocks, version) {
     "\\usepackage{fontspec}",
     "\\setmainfont{Helvetica Neue}",
     "\\usepackage{enumitem}",
+    if (has_figures(blocks)) "\\usepackage{graphicx}",
     "\\setlength{\\parindent}{0pt}",
     "\\setlength{\\parskip}{2pt}",
     "\\begin{document}",
@@ -71,6 +95,7 @@ render_papers <- function(config = default_config_path(), outdir = "output") {
 
 parse_question_blocks <- function(path, cfg) {
   lines <- readLines(path, warn = FALSE)
+  base_dir <- dirname(path)
   opts <- tolower(cfg$options)
   blocks <- list()
   current <- NULL
@@ -94,6 +119,23 @@ parse_question_blocks <- function(path, cfg) {
     }
 
     if (is.null(current) || !nzchar(trimws(line))) next
+    fig_hit <- regmatches(line, regexec(figure_line_regex, line, perl = TRUE))[[1]]
+    if (length(fig_hit) > 0) {
+      if (!is.null(current$figure)) {
+        stop("Question ", current$number, " has more than one figure line.", call. = FALSE)
+      }
+      fig_path <- if (grepl("^(/|[A-Za-z]:)", fig_hit[3])) fig_hit[3] else file.path(base_dir, fig_hit[3])
+      if (!file.exists(fig_path)) {
+        stop("Question ", current$number, ": figure not found: ", fig_hit[3],
+             " (looked in ", normalizePath(base_dir), ")", call. = FALSE)
+      }
+      current$figure <- list(
+        caption = trimws(fig_hit[2]),
+        path    = normalizePath(fig_path),
+        width   = if (nzchar(fig_hit[4])) min(as.numeric(fig_hit[4]), 1) else 0.8
+      )
+      next
+    }
     opt_match <- regexec(paste0("^([", paste(opts, collapse = ""), "])\\.\\s+(.*)$"), line)
     opt_hit <- regmatches(line, opt_match)[[1]]
     if (length(opt_hit) > 0) {
@@ -128,10 +170,11 @@ latex_inline_quiz <- function(cfg, blocks, version) {
     }
     c(
       "\\begin{samepage}",
-      sprintf("\\questionblock{%d}{%s}", q$number, tex_escape(q$question)),
+      sprintf("\\questionblock{%d}{%s}", q$number, tex_escape_math(q$question)),
+      figure_tex(q$figure, cfg$figure_max_height),
       sprintf("\\begin{enumerate}[label=\\alph*., leftmargin=1.4em, itemsep=%s, topsep=2pt]",
               cfg$spacing$option %||% "1pt"),
-      sprintf("  \\item %s", tex_escape(opts)),
+      sprintf("  \\item %s", tex_escape_math(opts)),
       "\\end{enumerate}",
       sprintf("\\answerline{%d}{%s}", q$number, bubble_row),
       sprintf("\\vspace{%s}", cfg$spacing$question %||% "5pt"),
@@ -150,6 +193,7 @@ latex_inline_quiz <- function(cfg, blocks, version) {
     "\\usepackage{refcount}",
     "\\usepackage{xcolor}",
     "\\usepackage{enumitem}",
+    if (has_figures(blocks)) "\\usepackage{graphicx}",
     "\\usepackage[nolinks]{qrcode}",
     "\\pagestyle{empty}",
     "\\setlength{\\parindent}{0pt}",

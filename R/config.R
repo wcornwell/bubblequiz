@@ -176,6 +176,8 @@ load_exam_config <- function(path = default_config_path()) {
       option   = as.character(y$layout$option_spacing   %||% "1pt"),
       stem     = as.character(y$layout$stem_spacing     %||% "4pt")
     ),
+    # Tallest a figure may be on a question (LaTeX length); width is scaled to match.
+    figure_max_height = as.character(y$layout$figure_max_height %||% "7cm"),
     instructions = y$instructions %||% NULL,
     sections     = y$sections
   )
