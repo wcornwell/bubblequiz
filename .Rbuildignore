@@ -1,1 +1,7 @@
 ^tests/testthat/fixtures/real-scan$
+^\.github$
+^LICENSE\.md$
+^exam\.yml$
+^example$
+^.*\.Rcheck$
+^.*\.tar\.gz$

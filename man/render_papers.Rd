@@ -12,9 +12,13 @@ render_papers(config = default_config_path(), outdir = "output")
 \item{outdir}{Directory containing `questions_v*.md`.}
 }
 \value{
-Invisibly, the rendered PDF paths.
+Invisibly, the written `.tex` and `.pdf` paths.
 }
 \description{
-Converts `questions_v*.md` files from [generate_versions()] into PDFs using
-Quarto and the package's compact exam style.
+Converts `questions_v*.md` files from [generate_versions()] into a plain
+flowing question-only document per version -- no bubbles, no registration
+marks, no QR, because this document is never scanned. Paired with
+[make_bubblesheet()], which renders the separate, scannable bubble-only
+answer sheet. Unlike the answer sheet, this document has no page cap: it can
+run to as many pages as the quiz needs.
 }

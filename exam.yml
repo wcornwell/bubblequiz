@@ -2,8 +2,8 @@
 # bubblequiz exam configuration — the ONLY file you edit per course.
 #
 # Everything downstream derives from this: the printed bubble sheet, the
-# calibration coordinates, the vision prompt sent to Claude, the expected
-# question list used when validating scans, and the scoring in results.csv.
+# calibration coordinates, the expected question list used when validating
+# scans, and the scoring in results.csv.
 # ---------------------------------------------------------------------------
 
 course: BEES1041
@@ -45,7 +45,7 @@ sections:
     questions: [11, 12, 13, 14, 15]
     marks_each: 2
     # Essay questions are printed as a labelled row with no bubbles, and are
-    # automatically excluded from marking, scoring and the vision prompt.
+    # automatically excluded from marking and scoring.
     essays:
       - number: 16
         marks: 10

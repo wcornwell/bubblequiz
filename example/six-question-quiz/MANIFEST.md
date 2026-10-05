@@ -20,7 +20,7 @@ This directory is a complete small course-repo-style example for `bubblequiz`.
 From this directory:
 
 ```r
-for (f in list.files("../../R", "[.]R$", full.names = TRUE)) source(f)
+library(bubblequiz)
 generate_versions("exam.yml", "questions.md", "output")
 make_quiz_forms("exam.yml", "output")
 combine_quiz_forms("exam.yml", "output")
@@ -29,5 +29,8 @@ combine_quiz_forms("exam.yml", "output")
 The combined PDF is designed for duplex printing. In this example, each version is two pages, so each student receives one double-sided sheet.
 
 Note: this example demonstrates question/version generation and the combined
-print PDF. The current local CV marker is calibrated per physical page, so use a
-one-page-per-version quiz for live marking until multi-page marking is added.
+print PDF, not a full scan-and-mark run. See the main README's "How The
+Geometry Pipeline Works" section for how a printed page like this one is
+calibrated and read back; `calibrate_coords()` and `mark_scans_cv()` are
+page-aware, so this two-page form is marked live the same way a one-page quiz
+is.

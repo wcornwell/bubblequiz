@@ -1,76 +1,101 @@
 # paper.R -- render generated question-paper markdown to printable PDFs.
 
-paper_wrapper <- function(cfg, source_md, style_file) {
-  body <- readLines(source_md, warn = FALSE)
+# A figure line sits between a question's stem and its options:
+#   ![caption](path/to/figure.png){width=0.7}
+# `width` is a fraction of the text width (default 0.8). Paths are relative to
+# the markdown file that contains them.
+figure_line_regex <- "^!\\[(.*)\\]\\(([^)]+)\\)(?:\\{width=([0-9.]+)\\})?\\s*$"
+
+figure_tex <- function(fig, max_height = "7cm") {
+  if (is.null(fig)) return(character(0))
+  max_height <- max_height %||% "7cm"
   c(
-    "---",
-    sprintf("title: \"%s\"", gsub("\"", "\\\\\"", cfg$title)),
-    "format:",
-    "  pdf:",
-    "    pdf-engine: xelatex",
-    sprintf("    include-in-header: %s", basename(style_file)),
-    "---",
-    "",
-    body
+    "\\begin{center}",
+    sprintf("\\includegraphics[width=%.2f\\linewidth, height=%s, keepaspectratio]{%s}",
+            fig$width, max_height, fig$path),
+    if (nzchar(fig$caption)) sprintf("\\\\[2pt]{\\footnotesize %s}", tex_escape_math(fig$caption)),
+    "\\end{center}"
+  )
+}
+
+has_figures <- function(blocks) {
+  any(vapply(blocks, function(q) !is.null(q$figure), logical(1)))
+}
+
+latex_question_paper <- function(cfg, blocks, version) {
+  question_tex <- unlist(lapply(blocks, function(q) {
+    opts <- q$options[tolower(cfg$options)]
+    if (any(is.na(opts))) {
+      stop("Question ", q$number, " is missing one or more options.", call. = FALSE)
+    }
+    c(
+      sprintf("\\textbf{Q%d.} %s\\par", q$number, tex_escape_math(q$question)),
+      figure_tex(q$figure, cfg$figure_max_height),
+      "\\begin{enumerate}[label=\\alph*., leftmargin=1.8em]",
+      sprintf("  \\item %s", tex_escape_math(opts)),
+      "\\end{enumerate}",
+      "\\vspace{4pt}"
+    )
+  }), use.names = FALSE)
+
+  c(
+    "\\documentclass[11pt, a4paper]{article}",
+    "\\usepackage[a4paper, left=1.8cm, right=1.8cm, top=1.4cm, bottom=1.4cm]{geometry}",
+    "\\usepackage{fontspec}",
+    "\\setmainfont{Helvetica Neue}",
+    "\\usepackage{enumitem}",
+    if (has_figures(blocks)) "\\usepackage{graphicx}",
+    "\\setlength{\\parindent}{0pt}",
+    "\\setlength{\\parskip}{2pt}",
+    "\\begin{document}",
+    sprintf("\\noindent{\\LARGE\\bfseries %s}\\hfill{\\large\\bfseries Version %s}\\\\[1pt]",
+            tex_escape(cfg$title), tex_escape(version)),
+    sprintf("{\\normalsize %s}\\\\[2pt]", tex_escape(cfg$subtitle)),
+    "\\rule{\\linewidth}{1pt}",
+    "\\vspace{6pt}",
+    question_tex,
+    "\\end{document}"
   )
 }
 
 #' Render generated question papers to PDF
 #'
-#' Converts `questions_v*.md` files from [generate_versions()] into PDFs using
-#' Quarto and the package's compact exam style.
+#' Converts `questions_v*.md` files from [generate_versions()] into a plain
+#' flowing question-only document per version -- no bubbles, no registration
+#' marks, no QR, because this document is never scanned. Paired with
+#' [make_bubblesheet()], which renders the separate, scannable bubble-only
+#' answer sheet. Unlike the answer sheet, this document has no page cap: it can
+#' run to as many pages as the quiz needs.
 #'
 #' @param config Path to the exam config YAML, or a loaded config list.
 #' @param outdir Directory containing `questions_v*.md`.
-#' @return Invisibly, the rendered PDF paths.
+#' @return Invisibly, the written `.tex` and `.pdf` paths.
 #' @export
 render_papers <- function(config = default_config_path(), outdir = "output") {
   cfg <- if (is.list(config)) config else load_exam_config(config)
   if (!dir.exists(outdir)) stop("Output directory not found: ", outdir, call. = FALSE)
 
-  md_files <- list.files(outdir, pattern = "^questions_v[0-9]+\\.md$",
-                         full.names = TRUE)
-  if (length(md_files) == 0) {
-    stop("No generated question files found in ", outdir,
-         "\nRun `bubblequiz versions` first.", call. = FALSE)
-  }
-  if (Sys.which("quarto") == "") {
-    stop("quarto was not found on PATH; install Quarto to render paper PDFs.",
-         call. = FALSE)
-  }
-
-  style_src <- bq_file("templates", "style.tex")
-  style_dst <- file.path(outdir, "style.tex")
-  file.copy(style_src, style_dst, overwrite = TRUE)
-
-  rendered <- character(0)
-  old_wd <- setwd(normalizePath(outdir))
-  on.exit(setwd(old_wd), add = TRUE)
-
-  for (md in md_files) {
-    base <- tools::file_path_sans_ext(basename(md))
-    qmd <- paste0(base, ".qmd")
-    pdf <- paste0(base, ".pdf")
-    writeLines(paper_wrapper(cfg, basename(md), style_dst), qmd)
-
-    message("Rendering: ", file.path(outdir, qmd))
-    status <- system2("quarto", c("render", qmd, "--to", "pdf"), stdout = FALSE)
-    if (!identical(status, 0L)) {
-      stop("quarto failed while rendering ", qmd, call. = FALSE)
+  written <- character(0)
+  for (v in cfg$valid_versions) {
+    md <- file.path(outdir, sprintf("questions_v%s.md", v))
+    if (!file.exists(md)) {
+      stop("Question version not found: ", md,
+           "\nRun `bubblequiz versions` first.", call. = FALSE)
     }
-    if (!file.exists(pdf)) {
-      stop("quarto did not write expected PDF: ", file.path(outdir, pdf),
-           call. = FALSE)
-    }
-    rendered <- c(rendered, file.path(outdir, pdf))
-    message("Wrote: ", file.path(outdir, pdf))
+    blocks <- parse_question_blocks(md, cfg)
+    tex_path <- file.path(outdir, sprintf("questions_v%s.tex", v))
+    writeLines(latex_question_paper(cfg, blocks, v), tex_path)
+    written <- c(written, tex_path)
+    message("Wrote: ", tex_path)
+    written <- c(written, render_xelatex(tex_path, outdir))
   }
 
-  invisible(rendered)
+  invisible(written)
 }
 
 parse_question_blocks <- function(path, cfg) {
   lines <- readLines(path, warn = FALSE)
+  base_dir <- dirname(path)
   opts <- tolower(cfg$options)
   blocks <- list()
   current <- NULL
@@ -94,6 +119,23 @@ parse_question_blocks <- function(path, cfg) {
     }
 
     if (is.null(current) || !nzchar(trimws(line))) next
+    fig_hit <- regmatches(line, regexec(figure_line_regex, line, perl = TRUE))[[1]]
+    if (length(fig_hit) > 0) {
+      if (!is.null(current$figure)) {
+        stop("Question ", current$number, " has more than one figure line.", call. = FALSE)
+      }
+      fig_path <- if (grepl("^(/|[A-Za-z]:)", fig_hit[3])) fig_hit[3] else file.path(base_dir, fig_hit[3])
+      if (!file.exists(fig_path)) {
+        stop("Question ", current$number, ": figure not found: ", fig_hit[3],
+             " (looked in ", normalizePath(base_dir), ")", call. = FALSE)
+      }
+      current$figure <- list(
+        caption = trimws(fig_hit[2]),
+        path    = normalizePath(fig_path),
+        width   = if (nzchar(fig_hit[4])) min(as.numeric(fig_hit[4]), 1) else 0.8
+      )
+      next
+    }
     opt_match <- regexec(paste0("^([", paste(opts, collapse = ""), "])\\.\\s+(.*)$"), line)
     opt_hit <- regmatches(line, opt_match)[[1]]
     if (length(opt_hit) > 0) {
@@ -128,10 +170,11 @@ latex_inline_quiz <- function(cfg, blocks, version) {
     }
     c(
       "\\begin{samepage}",
-      sprintf("\\questionblock{%d}{%s}", q$number, tex_escape(q$question)),
+      sprintf("\\questionblock{%d}{%s}", q$number, tex_escape_math(q$question)),
+      figure_tex(q$figure, cfg$figure_max_height),
       sprintf("\\begin{enumerate}[label=\\alph*., leftmargin=1.4em, itemsep=%s, topsep=2pt]",
               cfg$spacing$option %||% "1pt"),
-      sprintf("  \\item %s", tex_escape(opts)),
+      sprintf("  \\item %s", tex_escape_math(opts)),
       "\\end{enumerate}",
       sprintf("\\answerline{%d}{%s}", q$number, bubble_row),
       sprintf("\\vspace{%s}", cfg$spacing$question %||% "5pt"),
@@ -150,6 +193,7 @@ latex_inline_quiz <- function(cfg, blocks, version) {
     "\\usepackage{refcount}",
     "\\usepackage{xcolor}",
     "\\usepackage{enumitem}",
+    if (has_figures(blocks)) "\\usepackage{graphicx}",
     "\\usepackage[nolinks]{qrcode}",
     "\\pagestyle{empty}",
     "\\setlength{\\parindent}{0pt}",
@@ -252,7 +296,11 @@ make_quiz_forms <- function(config = default_config_path(),
     writeLines(latex_inline_quiz(cfg, blocks, v), tex_path)
     written <- c(written, tex_path)
     message("Wrote: ", tex_path)
-    if (render) written <- c(written, render_xelatex(tex_path, outdir))
+    if (render) {
+      pdf_path <- render_xelatex(tex_path, outdir)
+      written <- c(written, pdf_path)
+      enforce_page_cap(pdf_path, v)
+    }
   }
   invisible(written)
 }

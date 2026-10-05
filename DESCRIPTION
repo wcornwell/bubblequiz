@@ -5,11 +5,10 @@ Authors@R: person("Will", "Cornwell", email = "wcornwell@gmail.com", role = c("a
 Author: Will Cornwell [aut, cre]
 Maintainer: Will Cornwell <wcornwell@gmail.com>
 Description: An end-to-end toolkit for paper multiple-choice quizzes. Define the
-    quiz shape once in a YAML config, draft or overgenerate questions from a
-    lecture transcript, print shuffled QR-coded forms, and mark scanned sheets
-    with local computer vision before scoring them against the version-aware
-    answer key. Designed to be installed once and called from any course
-    repository.
+    quiz shape once in a YAML config, print shuffled QR-coded forms, and mark
+    scanned sheets with local computer vision before scoring them against the
+    version-aware answer key. Designed to be installed once and called from
+    any course repository.
 License: MIT + file LICENSE
 Encoding: UTF-8
 Depends: R (>= 4.1)
@@ -20,10 +19,6 @@ Imports:
     tibble,
     pdftools,
     magick,
-    httr2,
-    jsonlite,
-    base64enc,
-    curl,
     qpdf,
     stats,
     tools,
@@ -32,5 +27,5 @@ Suggests:
     optparse,
     testthat (>= 3.0.0),
     withr
-SystemRequirements: pandoc, xelatex, poppler, ImageMagick, zbar, yt-dlp
+SystemRequirements: xelatex, poppler, ImageMagick, zbar
 Config/roxygen2/version: 8.0.0

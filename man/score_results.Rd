@@ -13,7 +13,7 @@ score_results(
 )
 }
 \arguments{
-\item{dir}{Folder created by [preprocess_scans()] and filled in by [mark_scans()].}
+\item{dir}{Folder created by [preprocess_scans()] and filled in by [mark_scans_cv()].}
 
 \item{key}{Path to `answer_key.csv` from [generate_versions()].}
 

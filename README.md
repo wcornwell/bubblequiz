@@ -1,8 +1,35 @@
 # bubblequiz
 
-Paper multiple-choice quizzes, end to end, from R: write the questions once,
-print shuffled QR-coded forms, scan the completed sheets, and mark them with
-local computer vision, then upload the grades to Moodle.
+[![R-CMD-check](https://github.com/wcornwell/bubblequiz/actions/workflows/R-CMD-check.yaml/badge.svg?branch=main)](https://github.com/wcornwell/bubblequiz/actions/workflows/R-CMD-check.yaml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE.md)
+![R >= 4.1](https://img.shields.io/badge/R-%3E%3D%204.1-276DC3?logo=r&logoColor=white)
+
+You need to give a low-stakes multiple-choice quiz, and you can no longer trust the obvious way to give it.
+
+Put it on the learning platform and a student has an LLM open in the next tab, or
+a browser extension that answers the question before they've finished reading it.
+Locking down the browser, the room, and the network is an arms race you can't win
+one quiz at a time. The old answer to this problem — a printed sheet, a pencil,
+and a bubble to fill in — never had that problem, because there was nothing to
+paste the question into. Most universities, though, dismantled the scantron
+infrastructure that used to make paper multiple choice practical at scale: no
+scanner, no proprietary form, no one left who runs the machine.
+
+`bubblequiz` is a modern, personal-scale replacement for that machine. It
+designs a quiz, typesets it to LaTeX with randomized question/option order and
+QR-coded anchors, and — because it knows the exact geometry of the printed page
+and where every bubble sits relative to those anchors — reads the scanned
+answer sheets back with ordinary computer vision, entirely on your own machine.
+A large language model could technically grade a bubble sheet too, but sending
+a classroom's identifying ID numbers and answers to a cloud API is both a
+privacy exposure you don't need and considerable overkill for a task that comes
+down to "is this box dark or light." Where a mark is genuinely ambiguous —
+a half-filled bubble, a smudge, a stray mark — bubblequiz doesn't guess; it
+flags the row for a human to look at instead.
+
+In short: write the questions once, print shuffled QR-coded forms, scan the
+completed sheets, mark them with local computer vision, and upload the grades
+to Moodle.
 
 ```text
 exam.yml + questions.md
@@ -20,13 +47,15 @@ week2_scans/*.pdf  ──►  mark_quiz()  ──►  review.csv  ──►  mar
   Every page carries a QR code with its version and page number, so marking
   uses the right answer key automatically.
 - **Local, deterministic marking.** Bubbles and zIDs are read from the scan
-  with image processing. Marking needs no API call, and the same scan always
-  gives the same result.
+  with image processing, and the same scan always gives the same result.
 - **It never guesses.** Anything not read cleanly (corrections, faint marks,
   skewed pages, unknown zIDs, feeder errors) goes to a review file for a
   person to decide. Those decisions are kept as a permanent record.
-- **Optional question drafting.** You can draft candidate questions from a
-  lecture transcript or YouTube video, then check them against what was said.
+- **Offline.** Nothing is sent to any outside service.
+
+To draft questions from a lecture, use the companion package
+[bubblequizwrite](https://github.com/wcornwell/bubblequizwrite), which writes
+the `questions.md` that bubblequiz prints.
 
 The package is the reusable engine. Each course keeps its own `exam.yml`,
 `questions.md`, scans and outputs in a separate course folder.
@@ -36,7 +65,6 @@ The package is the reusable engine. Each course keeps its own `exam.yml`,
 - [Installation](#installation)
 - [Quick start](#quick-start)
 - [The course folder](#the-course-folder)
-- [Drafting questions from a lecture (optional)](#drafting-questions-from-a-lecture-optional)
 - [Printing and scanning](#printing-and-scanning)
 - [Marking](#marking)
 - [Reviewing flagged sheets](#reviewing-flagged-sheets)
@@ -59,11 +87,9 @@ System tools (macOS with Homebrew shown):
 | poppler (`pdftoppm`) | rendering scans to images | `brew install poppler` |
 | zbar (`zbarimg`) | reading QR codes | `brew install zbar` |
 | ImageMagick | image processing | `brew install imagemagick` |
-| yt-dlp | *optional:* YouTube captions | `brew install yt-dlp` |
 
-Question drafting and transcription use the OpenAI API and read
-`OPENAI_API_KEY` from the environment. Printing, scanning and marking need no
-API key.
+On Debian or Ubuntu:
+`sudo apt install poppler-utils zbar-tools texlive-xetex texlive-latex-extra`.
 
 ## Quick start
 
@@ -130,7 +156,9 @@ sections:
 
 ### `questions.md`
 
-Each question has its options and an HTML comment giving the answer:
+Write it by hand, or draft it from a lecture with
+[bubblequizwrite](https://github.com/wcornwell/bubblequizwrite). Each question
+has its options and an HTML comment giving the answer:
 
 ```markdown
 **Question 1 [1 mark]:** What is the best interpretation of RMSE?
@@ -143,6 +171,24 @@ e. A p-value
 
 <!-- Answer A -- RMSE is expressed in the response variable's units. -->
 ```
+
+### Figures and math
+
+A question can show one figure, on its own line between the stem and the options:
+
+```markdown
+![Fig. 2 from Smith et al. (2021). Reproduced with permission.](figures/fig2.png){width=0.7}
+```
+
+The path is relative to `questions.md`; `width` is a fraction of the text width
+(default 0.8); the caption is printed under the figure. Figures are capped in
+height by `layout.figure_max_height` in `exam.yml` (default `7cm`). Figures take
+up space on the answer sheet, which is capped at two pages, so keep them small
+when a quiz is already long.
+
+`$...$` in stems, options and captions is typeset as math (`$R^2$`, `$p < 0.05$`).
+Dollar signs that do not pair up as math (`costs $5 and $10`) stay literal, and
+`\$` is always a literal dollar sign. Everything else is escaped as before.
 
 ### How many questions fit
 
@@ -157,41 +203,6 @@ With moderately wordy questions:
 Multi-page forms are marked correctly (see
 [How it works](#how-it-works)), but a single sheet per student is easier to
 handle and scan.
-
-## Drafting questions from a lecture (optional)
-
-Get a transcript. For YouTube, captions are used when available (via
-`yt-dlp`), and the audio is transcribed only when they are not:
-
-```r
-transcribe_lecture("https://www.youtube.com/watch?v=Xrw0G-Pt1fI",
-                   output = "output/transcript.txt")
-```
-
-Overgenerate candidates, pick the best, and write `questions.md`:
-
-```r
-generate_question_candidates(transcript = "output/transcript.txt",
-                             config = "exam.yml",
-                             output = "output/question_candidates.md",
-                             n_candidates = 14)
-
-select_questions(candidates = "output/question_candidates.md",
-                 selected = c(2, 4, 5, 8, 11, 13),
-                 output = "questions.md")
-```
-
-Check that every question, hand-written or generated, is supported by the
-lecture:
-
-```r
-check_questions_in_transcript(questions = "questions.md",
-                              transcript = "output/transcript.txt",
-                              output = "output/question_coverage.csv")
-```
-
-`question_coverage.csv` flags any question whose text, answer or core concept
-is not clearly supported by the transcript.
 
 ## Printing and scanning
 
@@ -337,6 +348,54 @@ or `ok`). `preprocess_scans()` never overwrites this file.
 
 ## How it works
 
+bubblequiz never looks at a scanned page and guesses where the bubbles are. It
+renders the form, measures its own rendering, and reads scans back against
+those exact measurements, the same trick a scantron machine did with a
+physical template, done here with pixels.
+
+**1. Every printed sheet carries four anchors.** A 5mm black square sits 3mm
+inside each corner of the page, plus a QR code carrying the course, version,
+and page number.
+
+<img src="man/figures/geometry-registration-mark.png" width="260" alt="One corner of a printed sheet, showing the solid black registration square inset from the edge">
+
+**2. Calibration reads the rendered PDF, not the LaTeX source.** It
+pulls the (x, y) position of every printed option letter straight out of the
+PDF's own text layer and clusters them into bubble rows and columns. The
+marker does this from each version's blank form at marking time;
+`calibrate_coords()` writes the same result to `layout.R` — one set of coordinates, normalised 0–1 across the
+page, reused for every version and every scan of this quiz. A preview image
+confirms the fit by stamping each detected coordinate back onto the blank
+form:
+
+<img src="man/figures/geometry-calibration.png" width="260" alt="Close-up of a blank answer row with A B C D E stamped in red exactly on top of the printed bubbles">
+
+**3. A scan is just the same page, photographed.** Reading one back is a
+three-step lookup, not a model: find the four registration squares in the
+scanned image, fit a map from the calibrated page coordinates to this
+particular photo's pixel coordinates (correcting for the page having shifted,
+rotated, or scaled slightly in the scanner), then sample the ink darkness in
+a small circle at every bubble center that mapping predicts.
+
+<table>
+<tr>
+<td><img src="man/figures/geometry-bubble-blank.png" width="220" alt="Blank printed bubble row, options A through E"><br><sub>printed</sub></td>
+<td><img src="man/figures/geometry-bubble-filled.png" width="220" alt="Same row with bubble A filled in pen"><br><sub>filled in</sub></td>
+<td><img src="man/figures/geometry-bubble-marked.png" width="220" alt="Same row with A circled in orange by the marker, confirming the read"><br><sub>read back</sub></td>
+</tr>
+</table>
+
+**4. Each bubble is compared with the blank form.** The printed letter inside
+a circle is dark ink too, and different letters carry different amounts (a B
+has more than an A). So the blank form is rendered at the scan's own
+resolution, and each bubble's score is how much darker the scan is than the
+blank form at that spot. The printed letter cancels out, and only pen counts.
+The darkest bubble in a row wins, unless two are close, in which case the row
+is flagged. Every marked page is written back out with its reading overlaid
+(in `marked-cv/`), so a person can audit the call at a glance:
+
+<img src="man/figures/geometry-marked-page.jpeg" width="640" alt="Full marked quiz page: filled zID grid, Q1/Q2/Q4 circled in orange, Q3 circled in red because a second bubble was also inked">
+
 **Version tracking.** Each page shows its version in text and in a QR code:
 
 ```text
@@ -347,11 +406,10 @@ The marker uses the QR code to pick the answer-key column (e.g. `answer_v3`).
 If one side's QR is unreadable, the version is taken from the other side of
 the same sheet.
 
-**Calibration.** Bubble positions are read directly from each version's blank
-`output/quizform_v<N>.pdf` at marking time. A layout can therefore never be
-older than the paper it reads. Use `calibrate_coords()` to write
-`output/layout.R` and a `layout_preview.jpeg`, so you can check the bubble
-positions by eye.
+**Calibration at marking time.** Because bubble positions are read from each
+version's blank `output/quizform_v<N>.pdf` when marking, a layout can never be
+older than the paper it reads. `calibrate_coords()` also writes a
+`layout_preview.jpeg` so you can check the positions by eye.
 
 **Registration.** Before reading any bubbles, the marker checks every page
 against the printed text it expects to find (the "Answer Qn" labels and the
@@ -402,10 +460,8 @@ exec Rscript -e 'bubblequiz::bq_cli()' "$@"
 bubblequiz init
 bubblequiz check
 bubblequiz build                     # versions + forms + combined PDF + calibration
-bubblequiz transcribe "https://www.youtube.com/watch?v=Xrw0G-Pt1fI"
-bubblequiz candidates --transcript output/transcript.txt --n-candidates 14
-bubblequiz select --selected 2,4,5,8,11,13
-bubblequiz verify --transcript output/transcript.txt
+bubblequiz preprocess week2_scans/scans.pdf
+bubblequiz mark-cv --dir week2_scans/scans
 bubblequiz --help                    # all commands and options
 ```
 
@@ -421,3 +477,20 @@ student:
 Version 1: pages 1-2     Version 3: pages 5-6
 Version 2: pages 3-4     Version 4: pages 7-8
 ```
+
+## Development
+
+```r
+devtools::test()     # full suite, including marking the real-scan fixture
+devtools::check()
+```
+
+The marking tests need `pdftoppm` and `zbarimg` on the `PATH`, and skip
+without them. GitHub Actions runs `R CMD check` and the full suite on every
+push to `main` and on every pull request. `tests/test_layout.R` checks that the
+layout derived from the example config matches the original hand-written
+BEES2041 tables exactly.
+
+## License
+
+bubblequiz is released under the MIT License. See [LICENSE.md](LICENSE.md).

@@ -20,7 +20,7 @@
 #' change needed), or `exclude` (leave the sheet out, e.g. it was rescanned). Any row for a sheet marks it reviewed; a sheet still needs
 #' review while it holds an uncertain answer (`B*`) or an invalid zID.
 #'
-#' @param dir Folder created by [preprocess_scans()] and filled in by [mark_scans()].
+#' @param dir Folder created by [preprocess_scans()] and filled in by [mark_scans_cv()].
 #' @param key Path to `answer_key.csv` from [generate_versions()].
 #' @param config Path to the exam config YAML, or a loaded config list.
 #' @param output Output CSV path; defaults to `results.csv` inside `dir`.

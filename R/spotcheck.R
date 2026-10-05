@@ -172,7 +172,9 @@ page_registration <- function(dir, cfg, layouts) {
                angle = round(page_angle(r$ctx$map_xy), 2), stringsAsFactors = FALSE)
   })
   out <- do.call(rbind, rows)
-  utils::write.csv(transform(out, error = ifelse(is.finite(error), error, NA)), cache, row.names = FALSE)
+  saved <- out
+  saved$error[!is.finite(saved$error)] <- NA
+  utils::write.csv(saved, cache, row.names = FALSE)
   out
 }
 
