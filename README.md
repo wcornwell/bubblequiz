@@ -1,5 +1,9 @@
 # bubblequiz
 
+[![R-CMD-check](https://github.com/wcornwell/bubblequiz/actions/workflows/R-CMD-check.yaml/badge.svg?branch=main)](https://github.com/wcornwell/bubblequiz/actions/workflows/R-CMD-check.yaml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE.md)
+![R >= 4.1](https://img.shields.io/badge/R-%3E%3D%204.1-276DC3?logo=r&logoColor=white)
+
 You need to give a low-stakes multiple-choice quiz, and you can no longer trust the obvious way to give it.
 
 Put it on the learning platform and a student has an LLM open in the next tab, or
@@ -32,11 +36,21 @@ The package is the reusable engine. Course-specific files such as `exam.yml`, `q
 - Prints one integrated form per version: questions, answer bubbles, student-ID bubbles, and a QR anchor carrying the version and page metadata.
 - Combines all versions into one print PDF for easy duplex printing.
 - Reads completed scans with a local computer-vision marker — no cloud call, no student data leaving your machine.
-- Scores each page against the correct version-specific answer key, and flags anything ambiguous for manual review instead of silently guessing.
+- Scores each student's sheet against the correct version-specific answer key, and flags anything ambiguous for manual review instead of silently guessing.
+
+## Installation
+
+```r
+# install.packages("remotes")
+remotes::install_github("wcornwell/bubblequiz")
+```
+
+bubblequiz requires R 4.1 or later. Printing and QR decoding also need some
+external tools; see [External Tools](#external-tools).
 
 ## Worked Example
 
-A complete generated example is included in the general tool repository at:
+A complete generated example is included in this repository at:
 
 ```text
 example/six-question-quiz/
@@ -135,8 +149,9 @@ A question can show one figure, on its own line between the stem and the options
 
 The path is relative to `questions.md`; `width` is a fraction of the text width
 (default 0.8); the caption is printed under the figure. Figures are capped in
-height by `layout.figure_max_height` in `exam.yml` (default `7cm`). On inline quiz
-forms remember the 2-page cap: figures use space.
+height by `layout.figure_max_height` in `exam.yml` (default `7cm`). Figures take
+up space on the answer sheet, which is capped at two pages, so keep them small
+when a quiz is already long.
 
 `$...$` in stems, options and captions is typeset as math (`$R^2$`, `$p < 0.05$`).
 Dollar signs that do not pair up as math (`costs $5 and $10`) stay literal, and
@@ -367,15 +382,37 @@ one sheet per student (see above).
 
 ## External Tools
 
-For QR decoding:
+bubblequiz calls two external programs:
+
+- **zbar** (`zbarimg`) decodes the QR codes on scanned pages.
+- **XeLaTeX** with the TeX Live `qrcode` package typesets the printed forms.
+
+On macOS (Homebrew, with [MacTeX](https://tug.org/mactex/) or BasicTeX):
 
 ```bash
 brew install zbar
+sudo tlmgr install qrcode   # if your TeX installation lacks the package
 ```
 
-For rendering PDFs:
+On Debian or Ubuntu:
 
-- XeLaTeX
-- TeX Live package `qrcode`
+```bash
+sudo apt install zbar-tools texlive-xetex texlive-latex-extra
+```
 
-The current macOS test environment has both available.
+## Running The Tests
+
+From a clone of the repository:
+
+```r
+devtools::test()
+```
+
+`tests/test_layout.R` is a regression check that the layout derived from the
+example config matches the original hand-written BEES2041 tables exactly. It
+runs as part of `R CMD check`, which is also what CI runs on every push and
+pull request.
+
+## License
+
+bubblequiz is released under the MIT License. See [LICENSE.md](LICENSE.md).
