@@ -15,9 +15,13 @@
 \documentclass[11pt, a4paper]{article}
 \usepackage[a4paper, left=1.4cm, right=1.4cm, top=0.9cm, bottom=0.9cm]{geometry}
 \usepackage{fontspec}
-% Helvetica Neue ships only with macOS; elsewhere use TeX Gyre Heros, the
-% Helvetica clone in TeX Live (without a fallback every letter is dropped).
-\IfFontExistsTF{Helvetica Neue}{\setmainfont{Helvetica Neue}}{\setmainfont{texgyreheros}[Extension=.otf, UprightFont=*-regular, BoldFont=*-bold, ItalicFont=*-italic, BoldItalicFont=*-bolditalic]}
+% Helvetica Neue ships only with macOS. Elsewhere TeX Gyre Heros, a Helvetica
+% clone: by name where it is a system font, else by file from TeX Live; failing
+% both, the TeX default. A missing font would drop every letter. Keep in step
+% with MAIN_FONT_TEX in R/paper.R.
+\IfFontExistsTF{Helvetica Neue}{\setmainfont{Helvetica Neue}}{%
+  \IfFontExistsTF{TeX Gyre Heros}{\setmainfont{TeX Gyre Heros}}{%
+    \IfFontExistsTF{texgyreheros-regular.otf}{\setmainfont{texgyreheros}[Extension=.otf, UprightFont=*-regular, BoldFont=*-bold, ItalicFont=*-italic, BoldItalicFont=*-bolditalic]}{}}}
 \usepackage{tikz}
 \usepackage{eso-pic}
 \usepackage{lastpage}

@@ -1,13 +1,16 @@
 # paper.R -- render generated question-paper markdown to printable PDFs.
 
-# Helvetica Neue ships only with macOS. Elsewhere XeLaTeX cannot find it and
-# silently drops every letter from the PDF, so fall back to TeX Gyre Heros, the
-# Helvetica clone in TeX Live. Calibration measures the rendered PDF, so the
-# marker follows whichever font the form was printed in.
+# Helvetica Neue ships only with macOS. Elsewhere use TeX Gyre Heros, a
+# Helvetica clone: by name where it is a system font (Debian/Ubuntu
+# fonts-texgyre), else by file from TeX Live. If neither exists the TeX default
+# font stays, which still beats a missing font -- that drops every letter.
+# Calibration measures the rendered PDF, so the marker follows whichever font
+# the form was printed in. Keep in step with inst/templates/bubblesheet_preamble.tex.
 MAIN_FONT_TEX <- paste0(
-  "\\IfFontExistsTF{Helvetica Neue}{\\setmainfont{Helvetica Neue}}",
-  "{\\setmainfont{texgyreheros}[Extension=.otf, UprightFont=*-regular, ",
-  "BoldFont=*-bold, ItalicFont=*-italic, BoldItalicFont=*-bolditalic]}"
+  "\\IfFontExistsTF{Helvetica Neue}{\\setmainfont{Helvetica Neue}}{",
+  "\\IfFontExistsTF{TeX Gyre Heros}{\\setmainfont{TeX Gyre Heros}}{",
+  "\\IfFontExistsTF{texgyreheros-regular.otf}{\\setmainfont{texgyreheros}[Extension=.otf, ",
+  "UprightFont=*-regular, BoldFont=*-bold, ItalicFont=*-italic, BoldItalicFont=*-bolditalic]}{}}}"
 )
 
 # A figure line sits between a question's stem and its options:
