@@ -1,5 +1,15 @@
 # paper.R -- render generated question-paper markdown to printable PDFs.
 
+# Helvetica Neue ships only with macOS. Elsewhere XeLaTeX cannot find it and
+# silently drops every letter from the PDF, so fall back to TeX Gyre Heros, the
+# Helvetica clone in TeX Live. Calibration measures the rendered PDF, so the
+# marker follows whichever font the form was printed in.
+MAIN_FONT_TEX <- paste0(
+  "\\IfFontExistsTF{Helvetica Neue}{\\setmainfont{Helvetica Neue}}",
+  "{\\setmainfont{texgyreheros}[Extension=.otf, UprightFont=*-regular, ",
+  "BoldFont=*-bold, ItalicFont=*-italic, BoldItalicFont=*-bolditalic]}"
+)
+
 # A figure line sits between a question's stem and its options:
 #   ![caption](path/to/figure.png){width=0.7}
 # `width` is a fraction of the text width (default 0.8). Paths are relative to
@@ -42,7 +52,7 @@ latex_question_paper <- function(cfg, blocks, version) {
     "\\documentclass[11pt, a4paper]{article}",
     "\\usepackage[a4paper, left=1.8cm, right=1.8cm, top=1.4cm, bottom=1.4cm]{geometry}",
     "\\usepackage{fontspec}",
-    "\\setmainfont{Helvetica Neue}",
+    MAIN_FONT_TEX,
     "\\usepackage{enumitem}",
     if (has_figures(blocks)) "\\usepackage{graphicx}",
     "\\setlength{\\parindent}{0pt}",
@@ -186,7 +196,7 @@ latex_inline_quiz <- function(cfg, blocks, version) {
     "\\documentclass[10pt, a4paper]{article}",
     "\\usepackage[a4paper, left=1.4cm, right=1.4cm, top=0.9cm, bottom=0.9cm]{geometry}",
     "\\usepackage{fontspec}",
-    "\\setmainfont{Helvetica Neue}",
+    MAIN_FONT_TEX,
     "\\usepackage{tikz}",
     "\\usepackage{eso-pic}",
     "\\usepackage{lastpage}",
