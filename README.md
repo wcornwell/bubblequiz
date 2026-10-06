@@ -53,10 +53,6 @@ week2_scans/*.pdf  ──►  mark_quiz()  ──►  review.csv  ──►  mar
   person to decide. Those decisions are kept as a permanent record.
 - **Offline.** Nothing is sent to any outside service.
 
-To draft questions from a lecture, use the companion package
-[bubblequizwrite](https://github.com/wcornwell/bubblequizwrite), which writes
-the `questions.md` that bubblequiz prints.
-
 The package is the reusable engine. Each course keeps its own `exam.yml`,
 `questions.md`, scans and outputs in a separate course folder.
 
@@ -156,9 +152,8 @@ sections:
 
 ### `questions.md`
 
-Write it by hand, or draft it from a lecture with
-[bubblequizwrite](https://github.com/wcornwell/bubblequizwrite). Each question
-has its options and an HTML comment giving the answer:
+Write the file by hand. Each question has its options and an HTML comment
+giving the answer:
 
 ```markdown
 **Question 1 [1 mark]:** What is the best interpretation of RMSE?

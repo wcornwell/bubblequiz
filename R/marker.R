@@ -63,6 +63,15 @@ load_layout <- function(path = "output/layout.R") {
 # ---------------------------------------------------------------------------
 free_page_images <- function() invisible(gc(verbose = FALSE))
 
+# Blank form pages are cached while a stack is being marked, but must not
+# survive that stack: each entry contains a full-page grayscale matrix.  Drop
+# all entries explicitly so a later marking run does not retain the previous
+# course's forms.
+clear_blank_cache <- function() {
+  rm(list = ls(envir = .blank_cache, all.names = TRUE), envir = .blank_cache)
+  free_page_images()
+}
+
 # ---------------------------------------------------------------------------
 # save_progress: write progress CSV to disk
 # ---------------------------------------------------------------------------
@@ -605,6 +614,10 @@ blank_form_ctx <- function(form_pdf, page, width) {
   if (!isTRUE(ctx$marker_ok)) {
     stop("Could not find the corner markers on the blank form ", form_pdf, call. = FALSE)
   }
+  # Bubble and registration comparisons use the grayscale matrix and mapping,
+  # not the underlying magick image.  Keeping it here pins a second full-page
+  # pixel buffer for every version and page in the cache.
+  ctx$img <- NULL
   .blank_cache[[key]] <- ctx
   ctx
 }
@@ -1020,6 +1033,11 @@ mark_scans_cv <- function(dir,
                           layout = "output/layout.R",
                           forms = NULL,
                           dry_run = FALSE) {
+  # Cache blank pages only for this invocation. Different scans and test
+  # fixtures generally use different paths, so a process-wide cache grows
+  # without bound and can exhaust ImageMagick's Linux cache limits.
+  clear_blank_cache()
+  on.exit(clear_blank_cache(), add = TRUE)
   if (!dir.exists(dir)) stop("Directory not found: ", dir, call. = FALSE)
   cfg <- if (is.list(config)) config else load_exam_config(config)
   layout <- resolve_layouts(cfg, layout, forms)

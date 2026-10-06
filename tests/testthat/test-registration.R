@@ -114,6 +114,7 @@ test_that("the registration check measures how far the page is out", {
   f <- page_png(attr(L, "form_pdf"), 1, work, "p.png")
   ctx <- build_map_xy(f)
   blank <- blank_form_ctx(attr(L, "form_pdf"), 1L, ctx$w)
+  expect_null(blank$img)
   anchors <- registration_anchors(cfg, L, 1L)
   expect_gt(nrow(anchors), 1)
   expect_true(all(abs(registration_offsets(ctx, blank, anchors)) <= 1))

@@ -36,7 +36,6 @@ Common options:
   --dry-run           Mark only the first 3 pending pages
   --force             Re-extract scans over an existing folder
 
-Questions can be drafted from a lecture with the bubblequizwrite package.
 ")
 }
 
