@@ -1,4 +1,4 @@
-^tests/testthat/fixtures/real-scan$
+^tests/testthat/fixtures/synthetic-scan$
 ^\.github$
 ^LICENSE\.md$
 ^exam\.yml$

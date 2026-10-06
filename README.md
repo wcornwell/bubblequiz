@@ -476,7 +476,7 @@ Version 2: pages 3-4     Version 4: pages 7-8
 ## Development
 
 ```r
-devtools::test()     # full suite, including marking the real-scan fixture
+devtools::test()     # full suite, including marking a 22-page synthetic fixture
 devtools::check()
 ```
 
