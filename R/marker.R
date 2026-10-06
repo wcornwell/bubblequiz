@@ -1,12 +1,13 @@
-# marker.R -- read scanned bubble sheets with local, deterministic computer
-# vision. No network call, no API key: every bubble is read by sampling ink
-# darkness at its calibrated center and classifying the darkest circle in each
-# row. Each page is written out annotated so a human can audit what was
-# recorded.
+# marker.R -- read scanned bubble sheets with deterministic computer vision.
+#
+# Every page is located by its corner markers, checked against the printed text
+# it should carry (registration), and then read bubble by bubble from the scan
+# pixels. Nothing is guessed: a mark that is not read cleanly is recorded as
+# uncertain and the sheet goes to review. Each page is written out annotated so
+# a human can audit what was recorded.
 #
 # Nothing here knows about a particular exam: question numbers and option
-# letters come from the config, and bubble coordinates come from the
-# calibrated layout file.
+# letters come from the config, and bubble coordinates from the blank forms.
 
 # Registration-mark centres in template space (normalised 0-1): 5mm squares
 # inset 3mm from each corner of an A4 page, as drawn by the sheet preamble.
@@ -41,16 +42,34 @@ load_layout <- function(path = "output/layout.R") {
   } else {
     stats::setNames(rep(1L, length(e$QUESTION_Y)), names(e$QUESTION_Y))
   }
-  form_pdf <- NULL
-  if ("FORM_PDF" %in% ls(e)) {
-    form_pdf <- if (startsWith(e$FORM_PDF, "/")) e$FORM_PDF
-                else file.path(dirname(normalizePath(path, mustWork = TRUE)), e$FORM_PDF)
-  }
   out <- list(ANSWER_X = e$ANSWER_X, QUESTION_COL = e$QUESTION_COL,
-              QUESTION_Y = e$QUESTION_Y, QUESTION_PAGE = question_page,
-              form_pdf = form_pdf)
+              QUESTION_Y = e$QUESTION_Y, QUESTION_PAGE = question_page)
   attr(out, "path") <- normalizePath(path, mustWork = TRUE)
+  # FORM_PDF names the blank form the layout was measured from, relative to the
+  # layout file; without it the marker falls back to quizform_v1.pdf beside it.
+  if ("FORM_PDF" %in% ls(e)) {
+    attr(out, "form_pdf") <- if (startsWith(e$FORM_PDF, "/")) e$FORM_PDF
+                             else file.path(dirname(attr(out, "path")), e$FORM_PDF)
+  }
   out
+}
+
+# ---------------------------------------------------------------------------
+# free_page_images: a magick image is a small R object holding a large
+# ImageMagick pixel buffer, so R's garbage collector sees no memory pressure
+# and rarely runs; across a few hundred pages the buffers pile up until
+# ImageMagick's cache is exhausted (on Linux, whose limits are low, that is an
+# abort, not an error). Every loop over pages calls this once per page.
+# ---------------------------------------------------------------------------
+free_page_images <- function() invisible(gc(verbose = FALSE))
+
+# Blank form pages are cached while a stack is being marked, but must not
+# survive that stack: each entry contains a full-page grayscale matrix.  Drop
+# all entries explicitly so a later marking run does not retain the previous
+# course's forms.
+clear_blank_cache <- function() {
+  rm(list = ls(envir = .blank_cache, all.names = TRUE), envir = .blank_cache)
+  free_page_images()
 }
 
 # ---------------------------------------------------------------------------
@@ -73,38 +92,82 @@ gray_matrix <- function(img) {
 }
 
 # ---------------------------------------------------------------------------
-# detect_corner_markers: estimate marker centers in scan-space using darkest
-# pixels near expected corner locations.
-# Returns matrix with rows tl/tr/bl/br and cols x/y.
+# detect_corner_markers: locate the four printed corner squares in scan-space.
+# Returns matrix with rows tl/tr/bl/br and cols x/y, or NULL.
+#
+# Each marker is a solid 5 mm square. It is found as the place where a box a
+# little smaller than the marker is almost entirely dark -- something only a
+# solid square satisfies; text, the QR code and the black "Version" banner all
+# have white inside them at that scale. The centre is then the centroid of the
+# dark pixels of that square alone. (Taking the median of all dark pixels near
+# the expected corner, as this once did, let the Version banner beside the
+# top-left marker pull the fit sideways by a bubble's width.)
 # ---------------------------------------------------------------------------
-detect_corner_markers <- function(gray, w, h) {
-  thresh <- min(80L, as.integer(stats::quantile(gray, probs = 0.12, na.rm = TRUE)))
+MARKER_SIZE_MM <- 5
+
+detect_corner_markers <- function(gray, w, h, fit_tol_mm = 2) {
+  px_per_mm <- w / 210
+  side <- MARKER_SIZE_MM * px_per_mm
+  box <- max(3L, as.integer(round(side * 0.7)))
+  dark_level <- 110
 
   find_one <- function(ref_xy) {
-    cx <- as.integer(ref_xy["x"] * w)
-    cy <- as.integer(ref_xy["y"] * h)
-    rx <- max(20L, as.integer(w * 0.08))
-    ry <- max(20L, as.integer(h * 0.08))
+    cx <- ref_xy["x"] * w
+    cy <- ref_xy["y"] * h
+    # Search generously: scanners routinely shift the page by several mm, and a
+    # skewed sheet moves its corners further. Solid-square detection and the
+    # consistency check below keep a wide window from picking up anything else.
+    r <- as.integer(25 * px_per_mm)
+    x1 <- max(1L, as.integer(cx) - r); x2 <- min(w, as.integer(cx) + r)
+    y1 <- max(1L, as.integer(cy) - r); y2 <- min(h, as.integer(cy) + r)
+    dark <- gray[y1:y2, x1:x2, drop = FALSE] <= dark_level
+    nr <- nrow(dark); nc <- ncol(dark)
+    if (nr <= box || nc <= box) return(c(x = NA_real_, y = NA_real_))
 
-    x1 <- max(1L, cx - rx)
-    x2 <- min(w,  cx + rx)
-    y1 <- max(1L, cy - ry)
-    y2 <- min(h,  cy + ry)
+    # Box sums from an integral image: fraction of dark pixels in every
+    # box-by-box window, indexed by the window's top-left corner.
+    ii <- matrix(0, nr + 1, nc + 1)
+    ii[-1, -1] <- t(apply(apply(dark, 2, cumsum), 1, cumsum))
+    rs <- seq_len(nr - box + 1); cs <- seq_len(nc - box + 1)
+    frac <- (ii[rs + box, cs + box] - ii[rs, cs + box] -
+               ii[rs + box, cs] + ii[rs, cs]) / box^2
+    hits <- which(frac >= 0.9, arr.ind = TRUE)
+    if (nrow(hits) == 0) return(c(x = NA_real_, y = NA_real_))
 
-    win <- gray[y1:y2, x1:x2, drop = FALSE]
-    dark_idx <- which(win <= thresh, arr.ind = TRUE)
+    # Of the solid regions, the marker is the one nearest where it was printed.
+    hx <- x1 + hits[, "col"] - 1 + box / 2
+    hy <- y1 + hits[, "row"] - 1 + box / 2
+    k <- which.min((hx - cx)^2 + (hy - cy)^2)
 
-    if (nrow(dark_idx) < 20) return(c(x = NA_real_, y = NA_real_))
-
-    x_abs <- x1 + dark_idx[, "col"] - 1L
-    y_abs <- y1 + dark_idx[, "row"] - 1L
-
-    # Keep pixels closest to expected center to avoid nearby printed text.
-    d2 <- (x_abs - cx)^2 + (y_abs - cy)^2
-    keep_n <- max(30L, min(length(d2), as.integer(length(d2) * 0.2)))
-    keep <- order(d2)[seq_len(keep_n)]
-
-    c(x = stats::median(x_abs[keep]), y = stats::median(y_abs[keep]))
+    # Refine within one marker-width of the hit.
+    half <- as.integer(ceiling(side * 0.75))
+    wx1 <- max(1L, as.integer(hx[k]) - half); wx2 <- min(w, as.integer(hx[k]) + half)
+    wy1 <- max(1L, as.integer(hy[k]) - half); wy2 <- min(h, as.integer(hy[k]) + half)
+    win <- gray[wy1:wy2, wx1:wx2, drop = FALSE] <= dark_level
+    # A marker touching the edge of the scan is cut off, however much of it
+    # is left: its centre cannot be found.
+    if ((wx1 <= 2 && any(win[, 1])) || (wy1 <= 2 && any(win[1, ])) ||
+        (wx2 >= w - 1 && any(win[, ncol(win)])) || (wy2 >= h - 1 && any(win[nrow(win), ]))) {
+      return(c(x = NA_real_, y = NA_real_))
+    }
+    # Measure the solid core: the rows and columns that are at least half dark
+    # across a marker's width. A pen stroke touching the marker is too thin to
+    # count, so it neither stretches the square nor moves its centre.
+    rows <- which(rowSums(win) >= 0.5 * side)
+    cols <- which(colSums(win) >= 0.5 * side)
+    if (!length(rows) || !length(cols)) return(c(x = NA_real_, y = NA_real_))
+    # A marker is an isolated square with ~1.25 mm of paper around it inside
+    # this window. The end of a black banner or a block of print runs on to the
+    # window's edge.
+    if (min(rows) <= 1 || max(rows) >= nrow(win) || min(cols) <= 1 || max(cols) >= ncol(win)) {
+      return(c(x = NA_real_, y = NA_real_))
+    }
+    ext <- c(diff(range(cols)), diff(range(rows))) + 1
+    if (any(ext < 0.8 * side | ext > 1.35 * side)) return(c(x = NA_real_, y = NA_real_))
+    core <- win[rows, cols, drop = FALSE]
+    if (mean(core) < 0.85) return(c(x = NA_real_, y = NA_real_))
+    cxm <- wx1 - 1 + mean(range(cols)); cym <- wy1 - 1 + mean(range(rows))
+    c(x = cxm, y = cym)
   }
 
   pts <- t(vapply(seq_len(nrow(REG_MARKERS_REF)), function(i) {
@@ -114,11 +177,89 @@ detect_corner_markers <- function(gray, w, h) {
   rownames(pts) <- rownames(REG_MARKERS_REF)
   colnames(pts) <- c("x", "y")
 
-  # Basic geometry sanity checks before using these points.
-  if (any(!is.finite(pts))) return(NULL)
-  if (pts["tr", "x"] <= pts["tl", "x"] || pts["br", "x"] <= pts["bl", "x"]) return(NULL)
-  if (pts["bl", "y"] <= pts["tl", "y"] || pts["br", "y"] <= pts["tr", "y"]) return(NULL)
+  # The markers found must agree on one placement of the page. Printers and
+  # scanners stretch a page by slightly different amounts across and down
+  # (~96.9% x 96.0% on the Apeos); real four-marker pages agree to ~1 mm.
+  ok <- stats::complete.cases(pts)
+  src_mm <- cbind(REG_MARKERS_REF[, "x"] * 210, REG_MARKERS_REF[, "y"] * 297)
+  px_mm <- w / 210
+  # Leave-one-out: predict each marker from the others (affine from three,
+  # or shift-rotation-scale from two) and drop the one that disagrees most,
+  # while it disagrees by more than the tolerance. A least-squares fit of all
+  # of them would spread one bad marker's error over the good ones.
+  predict_from <- function(i, others) {
+    if (length(others) >= 3) {
+      M <- cbind(1, src_mm[others, , drop = FALSE])
+      coef <- qr.solve(M, pts[others, , drop = FALSE])
+      as.numeric(cbind(1, src_mm[i, , drop = FALSE]) %*% coef)
+    } else {
+      zr <- complex(real = src_mm[others, 1], imaginary = src_mm[others, 2])
+      zs <- complex(real = pts[others, 1], imaginary = pts[others, 2])
+      a <- (zs[2] - zs[1]) / (zr[2] - zr[1]); b <- zs[1] - a * zr[1]
+      z <- a * complex(real = src_mm[i, 1], imaginary = src_mm[i, 2]) + b
+      c(Re(z), Im(z))
+    }
+  }
+  # Three markers fit an affine exactly, so instead of prediction they are held
+  # to describing a plausible page: horizontal and vertical stretch within 3%
+  # of each other, and under a degree of shear. A banner or print block taken
+  # for a marker distorts the fit far beyond that.
+  plausible3 <- function(i) {
+    M <- cbind(1, src_mm[i, , drop = FALSE])
+    J <- qr.solve(M, pts[i, , drop = FALSE])[2:3, , drop = FALSE]   # rows: d/dx_mm, d/dy_mm
+    sx <- sqrt(sum(J[1, ]^2)); sy <- sqrt(sum(J[2, ]^2))
+    shear <- abs(asin(sum(J[1, ] * J[2, ]) / (sx * sy))) * 180 / pi
+    abs(sx / sy - 1) < 0.03 && shear < 1 && abs(sx / px_mm - 1) < 0.1
+  }
+  repeat {
+    i <- which(ok)
+    if (length(i) < 3) break
+    loo <- vapply(i, function(k) {
+      sqrt(sum((pts[k, ] - predict_from(k, setdiff(i, k)))^2))
+    }, numeric(1))
+    good <- if (length(i) == 4) max(loo) <= fit_tol_mm * px_mm else plausible3(i)
+    if (good) break
+    ok[i[which.max(loo)]] <- FALSE
+  }
+  zr_all <- complex(real = src_mm[, 1], imaginary = src_mm[, 2])
+  zs_all <- complex(real = pts[, "x"], imaginary = pts[, "y"])
+  if (sum(ok) == 2) {
+    i <- which(ok)
+    scale <- Mod(zs_all[i[2]] - zs_all[i[1]]) / (Mod(zr_all[i[2]] - zr_all[i[1]]) * px_mm)
+    if (abs(scale - 1) > 0.08) ok[i] <- FALSE
+  }
+  pts[!ok, ] <- NA_real_
+  if (sum(ok) < 2) return(NULL)
   pts
+}
+
+# fit_marker_map: map from template space (u, v) to scan pixels using however
+# many corner markers were found. Four give a bilinear fit (the original);
+# three an affine fit; two a similarity (shift, rotation, scale). A sheet fed
+# crooked can lose a corner off the edge of the scan; with fewer than four the
+# fit is rougher, and register_page() decides from the printed anchors whether
+# the page can be read at all.
+fit_marker_map <- function(pts) {
+  ok <- stats::complete.cases(pts)
+  src <- REG_MARKERS_REF[ok, , drop = FALSE]
+  dst <- pts[ok, , drop = FALSE]
+  if (sum(ok) == 4) return(fit_bilinear_map(src, dst))
+  if (sum(ok) == 3) {
+    M <- cbind(1, src[, "x"], src[, "y"])
+    ax <- solve(M, dst[, "x"]); ay <- solve(M, dst[, "y"])
+    return(map_result(function(u, v) {
+      list(x = ax[1] + ax[2] * u + ax[3] * v, y = ay[1] + ay[2] * u + ay[3] * v)
+    }))
+  }
+  # Two points: similarity in millimetre space, where the page is isotropic.
+  zr <- complex(real = src[, "x"] * 210, imaginary = src[, "y"] * 297)
+  zs <- complex(real = dst[, "x"], imaginary = dst[, "y"])
+  a <- (zs[2] - zs[1]) / (zr[2] - zr[1])
+  b <- zs[1] - a * zr[1]
+  map_result(function(u, v) {
+    z <- a * complex(real = u * 210, imaginary = v * 297) + b
+    list(x = Re(z), y = Im(z))
+  })
 }
 
 # ---------------------------------------------------------------------------
@@ -129,12 +270,19 @@ fit_bilinear_map <- function(src_uv, dst_xy) {
   M <- cbind(1, src_uv[, "x"], src_uv[, "y"], src_uv[, "x"] * src_uv[, "y"])
   ax <- as.numeric(solve(M, dst_xy[, "x"]))
   ay <- as.numeric(solve(M, dst_xy[, "y"]))
+  map_result(function(u, v) {
+    list(x = ax[1] + ax[2] * u + ax[3] * v + ax[4] * u * v,
+         y = ay[1] + ay[2] * u + ay[3] * v + ay[4] * u * v)
+  })
+}
 
+# map_result: wrap a vectorised (u, v) -> list(x, y) mapping so that a single
+# point returns c(x = , y = ) as the callers expect, and many points return a
+# two-column matrix.
+map_result <- function(f) {
   function(u, v) {
-    u <- as.numeric(u)
-    v <- as.numeric(v)
-    b <- c(1, u, v, u * v)
-    c(x = sum(ax * b), y = sum(ay * b))
+    r <- f(as.numeric(u), as.numeric(v))
+    if (length(r$x) == 1) c(x = r$x, y = r$y) else cbind(x = r$x, y = r$y)
   }
 }
 
@@ -142,7 +290,7 @@ fit_bilinear_map <- function(src_uv, dst_xy) {
 # build_map_xy: build a coordinate mapping function from an image
 # ---------------------------------------------------------------------------
 build_map_xy <- function(img_path) {
-  img  <- magick::image_read(img_path)
+  img  <- if (inherits(img_path, "magick-image")) img_path else magick::image_read(img_path)
   info <- magick::image_info(img)
   w    <- info$width
   h    <- info$height
@@ -155,12 +303,130 @@ build_map_xy <- function(img_path) {
     h          = h,
     gray       = gray,
     map_xy     = if (!is.null(marker_pts)) {
-      fit_bilinear_map(REG_MARKERS_REF, marker_pts)
+      fit_marker_map(marker_pts)
     } else {
-      function(u, v) c(x = as.numeric(u) * w, y = as.numeric(v) * h)
+      map_result(function(u, v) list(x = u * w, y = v * h))
     },
-    marker_ok  = !is.null(marker_pts)
+    marker_ok  = !is.null(marker_pts),
+    markers    = if (is.null(marker_pts)) 0L else sum(stats::complete.cases(marker_pts)),
+    marker_pts = marker_pts
   )
+}
+
+# page_angle: rotation of the page in the scan, in degrees (clockwise
+# positive), from the mapped direction of a horizontal line across it.
+page_angle <- function(map_xy) {
+  a <- map_xy(0.2, 0.5); b <- map_xy(0.8, 0.5)
+  atan2(b[["y"]] - a[["y"]], b[["x"]] - a[["x"]]) * 180 / pi
+}
+
+# registration_anchors: printed text on a page that is never written over,
+# used to check (and, when corner markers are lost, to fix) the registration:
+# every "Answer Qn" label, and on the front the "Fill zID digit bubbles:"
+# heading above the zID grid. One row per anchor: centre (u, v) and half-size
+# (hu, hv), as page fractions.
+registration_anchors <- function(cfg, layout, page_no) {
+  qs <- questions_on_page(cfg, layout, page_no)
+  rows <- lapply(qs, function(q) {
+    col <- layout$QUESTION_COL[[as.character(q)]]
+    x_a <- layout$ANSWER_X[[col]][[1]]
+    # "Answer Qn" runs from ~66 pt to ~15 pt left of the first bubble's centre.
+    c(u = x_a - 41 / PAGE_W, v = layout$QUESTION_Y[[as.character(q)]],
+      hu = 27 / PAGE_W, hv = 9 / PAGE_H)
+  })
+  heading <- zid_heading_box(form_pdf_for(layout), if (is.na(page_no)) 1L else page_no)
+  if (!is.null(heading)) rows <- c(rows, list(heading))
+  if (!length(rows)) return(matrix(numeric(0), ncol = 4, dimnames = list(NULL, c("u", "v", "hu", "hv"))))
+  do.call(rbind, rows)
+}
+
+# zid_heading_box: where "Fill zID digit bubbles:" is printed on a form page,
+# from the PDF's text layer, or NULL if the page has no such heading.
+zid_heading_box <- function(form_pdf, page) {
+  if (is.null(form_pdf) || !file.exists(form_pdf)) return(NULL)
+  txt <- pdftools::pdf_data(form_pdf)
+  if (page > length(txt)) return(NULL)
+  d <- txt[[page]]
+  i <- which(d$text == "Fill")
+  if (!length(i)) return(NULL)
+  line <- d[abs(d$y - d$y[i[1]]) < 2 & d$x >= d$x[i[1]], , drop = FALSE]
+  line <- line[order(line$x), , drop = FALSE]
+  line <- line[seq_len(min(nrow(line), 4)), , drop = FALSE]
+  x1 <- min(line$x); x2 <- max(line$x + line$width)
+  y1 <- min(line$y); y2 <- max(line$y + line$height)
+  c(u = (x1 + x2) / 2 / PAGE_W, v = (y1 + y2) / 2 / PAGE_H,
+    hu = (x2 - x1) / 2 / PAGE_W, hv = ((y2 - y1) / 2 + 2) / PAGE_H)
+}
+
+# registration_offsets: how far the mapped page is from where it should be, at
+# each anchor. The anchor area is sampled from the scan through the page
+# mapping -- so a rotated or stretched page is compared in the form's own
+# coordinates -- and slid against the same area of the blank form. The best
+# matching shift is the registration error there, in scan pixels; NA where the
+# anchor could not be located.
+registration_offsets <- function(ctx, blank_ctx, anchors, search = 8L) {
+  if (!nrow(anchors)) return(matrix(numeric(0), ncol = 2, dimnames = list(NULL, c("dx", "dy"))))
+  sample_gray <- function(g, xy) {
+    r <- round(xy[, "y"]); c <- round(xy[, "x"])
+    out <- rep(NA_real_, length(r))
+    ok <- r >= 1 & r <= nrow(g) & c >= 1 & c <= ncol(g)
+    out[ok] <- g[cbind(r[ok], c[ok])]
+    out
+  }
+  step <- max(1L, as.integer(search %/% 6L))
+  t(vapply(seq_len(nrow(anchors)), function(k) {
+    a <- anchors[k, ]
+    us <- seq(a[["u"]] - a[["hu"]], a[["u"]] + a[["hu"]], length.out = max(8L, as.integer(2 * a[["hu"]] * blank_ctx$w)))
+    vs <- seq(a[["v"]] - a[["hv"]], a[["v"]] + a[["hv"]], length.out = max(8L, as.integer(2 * a[["hv"]] * blank_ctx$h)))
+    uv <- expand.grid(u = us, v = vs)
+    tmpl <- sample_gray(blank_ctx$gray, blank_ctx$map_xy(uv$u, uv$v))
+    if (anyNA(tmpl) || stats::sd(tmpl) == 0) return(c(dx = NA_real_, dy = NA_real_))
+    tmpl <- tmpl - mean(tmpl)
+    at <- ctx$map_xy(uv$u, uv$v)
+    score <- function(dx, dy) {
+      p <- sample_gray(ctx$gray, at + matrix(c(dx, dy), nrow(at), 2, byrow = TRUE))
+      if (anyNA(p)) return(-Inf)
+      p <- p - mean(p)
+      r <- sum(tmpl * p) / sqrt(sum(tmpl^2) * sum(p^2))
+      if (is.finite(r)) r else -Inf
+    }
+    # Coarse grid over the whole window, then every pixel around the best.
+    best <- -Inf; found <- c(0, 0)
+    for (dy in seq(-search, search, by = step)) for (dx in seq(-search, search, by = step)) {
+      r <- score(dx, dy); if (r > best) { best <- r; found <- c(dx, dy) }
+    }
+    if (step > 1L) {
+      c0 <- found
+      for (dy in (c0[2] - step):(c0[2] + step)) for (dx in (c0[1] - step):(c0[1] + step)) {
+        r <- score(dx, dy); if (r > best) { best <- r; found <- c(dx, dy) }
+      }
+    }
+    # An anchor that matches nowhere well is not located, rather than
+    # "located" at whichever shift was least bad.
+    if (!is.finite(best) || best < 0.5) return(c(dx = NA_real_, dy = NA_real_))
+    c(dx = found[1], dy = found[2])
+  }, numeric(2)))
+}
+
+# register_page: map a scanned page onto its form, and check the result
+# against printed text (the anchors) before anything on it is read. Two or
+# three usable corner markers are enough to try -- a clipped corner is common
+# -- but the page only counts as registered if every anchor lands within
+# tolerance. A sheet fed badly skewed or shifted fails here and is flagged to
+# be rescanned straight; the marker does not try to recover it.
+register_page <- function(img_path, cfg, layout, page_no) {
+  ctx <- build_map_xy(img_path)
+  blank <- blank_form_ctx(form_pdf_for(layout), page_no, ctx$w)
+  anchors <- registration_anchors(cfg, layout, page_no)
+  scale <- ctx$w / 1654
+  off <- registration_offsets(ctx, blank, anchors, search = as.integer(round(8 * scale)))
+  err <- if (!nrow(off)) 0 else if (anyNA(off)) Inf else max(abs(off))
+  registered <- isTRUE(ctx$marker_ok) && err <= REGISTRATION_TOLERANCE_PX * scale
+  note <- if (registered) "" else paste0(
+    "page out of register (", if (is.finite(err)) sprintf("off by %.0f px", err) else "could not be located",
+    ", ", ctx$markers, " of 4 corner markers usable): fed skewed or shifted -- ",
+    "rescan it straight, or enter the answers by hand")
+  list(ctx = ctx, blank = blank, registered = registered, error = err, note = note)
 }
 
 # ---------------------------------------------------------------------------
@@ -257,28 +523,108 @@ ink_score <- function(gray, cx, cy, radius) {
   255 - mean(vals, na.rm = TRUE)
 }
 
-classify_bubble_row <- function(inks,
-                                min_ink = 35,
-                                min_gap = 12,
-                                double_gap = 8) {
-  inks <- sort(inks, decreasing = TRUE)
+# Bubble reading thresholds, in units of bubble_score(): ink above the blank
+# form. Measured on real scans (Sept 2026, 200 dpi, 11 hand-marked sheets):
+# filled answer bubbles scored >= 34.8 and empty ones <= -0.5; filled zID
+# bubbles >= 30.6 and empty ones <= 12.6. Each rule leaves a margin on both
+# sides, and anything between the lines is flagged for a human, not guessed.
+#   radius / search: disc size and registration slack, as fractions of width.
+#   mark:  a bubble this far above the blank form is a mark.
+#   blank: a row whose darkest bubble is below this is unanswered.
+#   gap:   the chosen bubble must beat every other bubble in its row by this.
+# A second bubble at or above `mark` is a second mark, and flags the row
+# whatever the gap: on the full first session (81 sheets) that caught three
+# corrections that a gap-only rule accepted wrongly.
+ANSWER_READ <- list(radius = 0.0075, search = 0.0024, mark = 18, blank = 10, gap = 12)
+ZID_READ    <- list(radius = 0.0055, search = 0.0012, mark = 22, blank = 16, gap = 12)
+
+classify_bubble_row <- function(inks, rule) {
+  # Checked before sorting: sort() silently drops NA, which would hide an
+  # unreadable bubble and let the rest of the row look clean.
   if (length(inks) == 0 || !all(is.finite(inks))) {
     return(list(answer = "", uncertain = TRUE, note = "non-finite ink score"))
   }
+  inks <- sort(inks, decreasing = TRUE)
   top <- inks[1]
   second <- if (length(inks) >= 2) inks[2] else 0
-  spread <- max(inks) - min(inks)
   choice <- names(inks)[1]
 
-  if (top < min_ink || spread < min_gap) {
-    return(list(answer = "", uncertain = FALSE, note = "blank"))
+  if (top < rule$blank) {
+    return(list(answer = "", uncertain = TRUE, note = "blank"))
   }
-  if (second >= min_ink && (top - second) < double_gap) {
+  if (top < rule$mark) {
+    return(list(answer = paste0(choice, "*"), uncertain = TRUE,
+                note = sprintf("faint mark: %s %.1f", choice, top)))
+  }
+  # Two marks in one row always go to a person, however far apart their
+  # scores. A crossed-out bubble is a filled bubble with more ink on top, so it
+  # usually scores darker than the answer the student meant -- on real scans
+  # the darker of two marks was the crossed-out one as often as not.
+  if (second >= rule$mark) {
+    return(list(answer = paste0(choice, "*"), uncertain = TRUE,
+                note = sprintf("two marks: %s %.1f and %s %.1f (one may be crossed out)",
+                               choice, top, names(inks)[2], second)))
+  }
+  if (top - second < rule$gap) {
     return(list(answer = paste0(choice, "*"), uncertain = TRUE,
                 note = sprintf("ambiguous row: top=%s %.1f, second=%s %.1f",
-                               names(inks)[1], top, names(inks)[2], second)))
+                               choice, top, names(inks)[2], second)))
   }
   list(answer = choice, uncertain = FALSE, note = "")
+}
+
+# bubble_score: how much darker the scan is than the blank form inside one
+# bubble. Subtracting the blank form cancels the printed letter or digit, which
+# otherwise dominates a faint mark: an empty "8" carries far more ink than an
+# empty "1". The scan is sampled over a small window around the mapped centre
+# to absorb registration error, and the median taken: a fill is dark wherever
+# the disc lands, while a printed digit a pixel out of register is dark only at
+# some offsets. (Taking the maximum instead picked the worst-aligned offset and
+# pushed empty zID bubbles to within 10 points of real marks.) The blank form
+# is rendered from the PDF and needs no search.
+bubble_score <- function(ctx, blank_ctx, u, v, rule) {
+  radius <- max(3L, as.integer(round(ctx$w * rule$radius)))
+  step   <- max(1L, as.integer(round(ctx$w * rule$search / 2)))
+  offs   <- seq(-2L * step, 2L * step, by = step)
+  pt <- ctx$map_xy(u, v)
+  scan_ink <- stats::median(unlist(lapply(offs, function(dx) vapply(offs, function(dy) {
+    ink_score(ctx$gray, as.integer(pt["x"] + dx), as.integer(pt["y"] + dy), radius)
+  }, numeric(1)))))
+  bpt <- blank_ctx$map_xy(u, v)
+  b_radius <- max(3L, as.integer(round(blank_ctx$w * rule$radius)))
+  scan_ink - ink_score(blank_ctx$gray, as.integer(bpt["x"]), as.integer(bpt["y"]), b_radius)
+}
+
+# blank_form_ctx: the blank form page rendered at the scan's pixel width, with
+# its own registration. Cached, since every scan of a version shares it.
+.blank_cache <- new.env(parent = emptyenv())
+blank_form_ctx <- function(form_pdf, page, width) {
+  if (is.null(form_pdf) || !file.exists(form_pdf)) {
+    stop("Blank form PDF not found: ", form_pdf %||% "<none>",
+         "\nThe marker reads each bubble against the blank form; pass `forms` ",
+         "or keep quizform_v<N>.pdf beside the layout file.", call. = FALSE)
+  }
+  page <- if (is.na(page)) 1L else as.integer(page)
+  key <- paste(normalizePath(form_pdf), page, width, file.mtime(form_pdf), sep = "|")
+  if (!is.null(.blank_cache[[key]])) return(.blank_cache[[key]])
+  dpi <- width / (PAGE_W / 72)
+  img <- magick::image_read_pdf(form_pdf, pages = page, density = dpi)
+  img <- magick::image_resize(img, sprintf("%dx", width))
+  ctx <- build_map_xy(magick::image_flatten(magick::image_background(img, "white")))
+  if (!isTRUE(ctx$marker_ok)) {
+    stop("Could not find the corner markers on the blank form ", form_pdf, call. = FALSE)
+  }
+  # Bubble and registration comparisons use the grayscale matrix and mapping,
+  # not the underlying magick image.  Keeping it here pins a second full-page
+  # pixel buffer for every version and page in the cache.
+  ctx$img <- NULL
+  .blank_cache[[key]] <- ctx
+  ctx
+}
+
+form_pdf_for <- function(layout) {
+  attr(layout, "form_pdf") %||%
+    file.path(dirname(attr(layout, "path") %||% "output/layout.R"), "quizform_v1.pdf")
 }
 
 # questions_on_page: which of the configured questions have their bubble row on
@@ -294,75 +640,26 @@ questions_on_page <- function(cfg, layout, page_no) {
   cfg$questions[keep]
 }
 
-# Darkest ink within a small window around a bubble center. The window absorbs
-# small registration error between the blank form and this particular scan.
-bubble_darkness <- function(ctx, x_pos, y_pos) {
-  radius <- max(5L, as.integer(ctx$w * 0.0062))
-  search_offsets <- seq(-18L, 18L, by = 6L)
-  pt <- ctx$map_xy(x_pos, y_pos)
-  vals <- c()
-  for (dx in search_offsets) {
-    for (dy in search_offsets) {
-      vals <- c(vals, ink_score(ctx$gray,
-                                as.integer(pt["x"] + dx),
-                                as.integer(pt["y"] + dy),
-                                radius))
-    }
-  }
-  max(vals, na.rm = TRUE)
-}
+# Registration tolerance, in pixels at 200 dpi (scaled to the scan's width):
+# how far printed text may sit from where the mapping puts it. On 324 real
+# pages (Sept 2026), well-fed sheets measured at most 6 px (0.8 mm) -- print
+# distortion, largest near the bottom -- which bubble reading absorbs (answer
+# discs have ~10 px of room, zID discs ~8). The anchor search reaches 8 px, so
+# an anchor found only at the edge of it, or not at all, fails the page.
+REGISTRATION_TOLERANCE_PX <- 7
 
-# Unfilled ink for every bubble on the blank form, measured the same way a scan
-# is read. The printed option letter is dark ink inside the circle, so an empty
-# bubble is not zero, and that floor differs by letter (B is denser than A).
-form_baseline <- function(layout, cfg) {
-  if (is.null(layout$form_pdf) || !file.exists(layout$form_pdf)) {
-    stop("Blank form not found for this layout (", layout$form_pdf %||% "no FORM_PDF",
-         "). Re-run calibrate_coords() with the blank form PDF.", call. = FALSE)
-  }
-  n_pages <- pdftools::pdf_length(layout$form_pdf)
-  pngs <- file.path(tempdir(), sprintf("bq-baseline-p%02d.png", seq_len(n_pages)))
-  pdftools::pdf_convert(layout$form_pdf, format = "png", dpi = 150,
-                        pages = seq_len(n_pages), filenames = pngs, verbose = FALSE)
-
-  answers <- list()
-  for (pg in seq_len(n_pages)) {
-    qs <- questions_on_page(cfg, layout, pg)
-    if (length(qs) == 0) next
-    ctx <- build_map_xy(pngs[pg])
-    for (q in qs) {
-      q_chr <- as.character(q)
-      col   <- layout$QUESTION_COL[q_chr]
-      y_pos <- layout$QUESTION_Y[q_chr]
-      answers[[q_chr]] <- vapply(cfg$options, function(letter) {
-        bubble_darkness(ctx, layout$ANSWER_X[[col]][letter], y_pos)
-      }, numeric(1))
-    }
-  }
-
-  # zID baseline: rows are digits 0-9 (row d+1), columns are ID digit positions.
-  zid <- NULL
-  grid <- load_id_grid_from_form(layout$form_pdf, cfg)
-  if (!is.null(grid)) {
-    ctx1 <- build_map_xy(pngs[1])
-    radius <- max(4L, as.integer(ctx1$w * 0.0042))
-    zid <- vapply(seq_len(cfg$id$digits), function(col_i) {
-      vapply(as.character(0:9), function(d) {
-        pt <- ctx1$map_xy(grid$x[[as.character(col_i)]], grid$y[[d]])
-        ink_score(ctx1$gray, as.integer(pt["x"]), as.integer(pt["y"]), radius)
-      }, numeric(1))
-    }, numeric(10))
-  }
-  width <- magick::image_info(magick::image_read(pngs[1]))$width
-  list(answers = answers, zid = zid, width = width)
-}
-
-read_answers_cv <- function(img_path, cfg, layout, page_no = NA_integer_, baseline = NULL) {
-  ctx <- build_map_xy(img_path)
+read_answers_cv <- function(img_path, cfg, layout, page_no = NA_integer_, reg = NULL) {
+  if (is.null(reg)) reg <- register_page(img_path, cfg, layout, page_no)
+  ctx <- reg$ctx
+  blank <- reg$blank
+  registered <- reg$registered
+  reg_err <- reg$error
+  reg_note <- reg$note
   answers <- stats::setNames(vector("list", length(cfg$questions)),
                              as.character(cfg$questions))
   notes <- character(0)
   inks_by_q <- list()
+  uncertain <- FALSE
 
   # A question whose bubbles are printed on another page is left as NA, which
   # is different from "" (printed here, left blank). Aggregation across the
@@ -378,6 +675,7 @@ read_answers_cv <- function(img_path, cfg, layout, page_no = NA_integer_, baseli
     y_pos <- layout$QUESTION_Y[q_chr]
     if (is.null(col) || is.na(col) || is.null(y_pos) || is.na(y_pos)) {
       answers[[q_chr]] <- ""
+      uncertain <- TRUE
       notes <- c(notes, sprintf("Q%s missing layout coordinate", q_chr))
       next
     }
@@ -385,20 +683,27 @@ read_answers_cv <- function(img_path, cfg, layout, page_no = NA_integer_, baseli
     inks <- vapply(cfg$options, function(letter) {
       x_pos <- layout$ANSWER_X[[col]][letter]
       if (is.null(x_pos) || is.na(x_pos)) return(NA_real_)
-      bubble_darkness(ctx, x_pos, y_pos)
+      bubble_score(ctx, blank, x_pos, y_pos, ANSWER_READ)
     }, numeric(1))
     names(inks) <- cfg$options
-    if (!is.null(baseline)) inks <- inks - baseline[[q_chr]][cfg$options]
     inks_by_q[[q_chr]] <- inks
 
-    cls <- classify_bubble_row(inks)
+    cls <- classify_bubble_row(inks, ANSWER_READ)
     answers[[q_chr]] <- cls$answer
-    if (nzchar(cls$note) && cls$note != "blank") {
-      notes <- c(notes, sprintf("Q%s %s", q_chr, cls$note))
-    }
+    uncertain <- uncertain || isTRUE(cls$uncertain)
+    if (nzchar(cls$note)) notes <- c(notes, sprintf("Q%s %s", q_chr, cls$note))
   }
 
-  list(answers = answers, notes = notes, inks = inks_by_q, marker_ok = ctx$marker_ok)
+  if (!registered) {
+    # Nothing read from a page out of register is reported as a letter: every
+    # question printed on it becomes "*" (uncertain, no reading).
+    for (q in this_page) answers[[as.character(q)]] <- "*"
+    notes <- reg_note
+    uncertain <- TRUE
+  }
+
+  list(answers = answers, notes = notes, inks = inks_by_q,
+       uncertain = uncertain, marker_ok = registered, reg_error = reg_err)
 }
 
 load_id_grid_from_form <- function(form_pdf, cfg) {
@@ -406,7 +711,6 @@ load_id_grid_from_form <- function(form_pdf, cfg) {
   txt <- pdftools::pdf_data(form_pdf, font_info = TRUE)[[1]]
   txt$xc <- (txt$x + txt$width / 2) / PAGE_W
   txt$yc <- (txt$y + txt$height / 2) / PAGE_H
-
   # The digit grid prints cfg$id$digits * 10 digits at one shared font size;
   # anything else with a lone digit (a date, "Page 1 of 2") is vastly
   # outnumbered, so the most common font size among digit text is the grid's,
@@ -429,26 +733,24 @@ load_id_grid_from_form <- function(form_pdf, cfg) {
   )
 }
 
-read_zid_cv <- function(img_path, cfg, form_pdf, baseline = NULL) {
+read_zid_cv <- function(img_path, cfg, form_pdf, ctx = NULL) {
   grid <- load_id_grid_from_form(form_pdf, cfg)
   if (is.null(grid)) {
     return(list(zid = NA_character_, uncertain = TRUE,
                 note = "zID grid coordinates unavailable"))
   }
-  ctx <- build_map_xy(img_path)
-  radius <- max(4L, as.integer(ctx$w * 0.0042))
+  if (is.null(ctx)) ctx <- build_map_xy(img_path)
+  blank <- blank_form_ctx(form_pdf, 1L, ctx$w)
 
   digits <- character(cfg$id$digits)
   notes <- character(0)
   for (col_i in seq_len(cfg$id$digits)) {
     inks <- vapply(names(grid$y), function(digit) {
-      pt <- ctx$map_xy(grid$x[[as.character(col_i)]], grid$y[[digit]])
-      ink_score(ctx$gray, as.integer(pt["x"]), as.integer(pt["y"]), radius)
+      bubble_score(ctx, blank, grid$x[[as.character(col_i)]], grid$y[[digit]], ZID_READ)
     }, numeric(1))
     names(inks) <- names(grid$y)
-    if (!is.null(baseline)) inks <- inks - baseline[as.integer(names(grid$y)) + 1L, col_i]
-    cls <- classify_bubble_row(inks, min_ink = 28, min_gap = 8, double_gap = 6)
-    if (!nzchar(cls$answer) || grepl("\\*$", cls$answer)) {
+    cls <- classify_bubble_row(inks, ZID_READ)
+    if (isTRUE(cls$uncertain)) {
       digits[col_i] <- "?"
       notes <- c(notes, sprintf("zID digit %d %s", col_i, cls$note))
     } else {
@@ -496,9 +798,8 @@ compare_crop <- function(a, b) {
   mean(abs(va - vb), na.rm = TRUE)
 }
 
-read_version_cv <- function(img_path, cfg, form_pdf) {
-  pattern   <- sub("_v[0-9]+\\.pdf$", "_v%s.pdf", basename(form_pdf))
-  templates <- file.path(dirname(form_pdf), sprintf(pattern, cfg$valid_versions))
+read_version_cv <- function(img_path, cfg, template_dir) {
+  templates <- file.path(template_dir, sprintf("quizform_v%s.pdf", cfg$valid_versions))
   names(templates) <- cfg$valid_versions
   templates <- templates[file.exists(templates)]
   if (length(templates) == 0) {
@@ -563,8 +864,8 @@ parse_qr_payload <- function(payload) {
   out
 }
 
-cv_parse_page <- function(img_path, page_num, cfg, layout, sheet_page = NA_integer_,
-                          baseline = NULL) {
+cv_parse_page <- function(img_path, page_num, cfg, layouts, sheet_page = NA_integer_,
+                          seq_version = NA_character_, seq_status = NA_character_) {
   qr <- decode_qr_cv(img_path)
   qr_fields <- parse_qr_payload(qr$payload)
   # Prefer the sheet page passed in (from the validated scan sequence); fall
@@ -572,26 +873,57 @@ cv_parse_page <- function(img_path, page_num, cfg, layout, sheet_page = NA_integ
   if (is.na(sheet_page) && !is.null(qr_fields$page)) {
     sheet_page <- suppressWarnings(as.integer(qr_fields$page))
   }
-  read <- read_answers_cv(img_path, cfg, layout, sheet_page, baseline$answers)
+
+  # The version decides which layout to read with, so it comes first. Versions
+  # shuffle the options, which changes line breaks and moves the answer rows by
+  # a few points; each version is read against its own calibrated form.
+  per_version <- is_layout_set(layouts)
+  version <- if (!is.null(qr_fields$version) && qr_fields$version %in% cfg$valid_versions) {
+    list(version = qr_fields$version, uncertain = FALSE, note = "")
+  } else if (!is.na(seq_version) && seq_version %in% cfg$valid_versions) {
+    # The sequence check identified this page from the other side of its sheet.
+    list(version = seq_version, uncertain = TRUE,
+         note = "version taken from the other side of the sheet")
+  } else {
+    list(version = NA_character_, uncertain = TRUE,
+         note = paste(c(qr$note, "version unknown: page QR unreadable"), collapse = " | "))
+  }
+  layout <- if (!per_version) {
+    layouts
+  } else if (!is.na(version$version) && !is.null(layouts[[version$version]])) {
+    layouts[[version$version]]
+  } else {
+    layouts[[1]]
+  }
+
+  reg <- register_page(img_path, cfg, layout, sheet_page)
+  read <- read_answers_cv(img_path, cfg, layout, sheet_page, reg = reg)
+  form_pdf <- form_pdf_for(layout)
   # The zID grid is printed on the front of the sheet only.
-  zid <- if (is.na(sheet_page) || sheet_page == 1L) {
-    read_zid_cv(img_path, cfg, layout$form_pdf, baseline$zid)
+  on_front <- is.na(sheet_page) || sheet_page == 1L
+  zid <- if (on_front && !isTRUE(read$marker_ok)) {
+    list(zid = paste0(cfg$id$prefix, strrep("?", cfg$id$digits)), uncertain = TRUE, note = "")
+  } else if (on_front) {
+    read_zid_cv(img_path, cfg, form_pdf, ctx = reg$ctx)
   } else {
     list(zid = NA_character_, uncertain = FALSE, note = "")
   }
-  version <- if (!is.null(qr_fields$version) && qr_fields$version %in% cfg$valid_versions) {
-    list(version = qr_fields$version, uncertain = FALSE, note = paste("QR:", qr$payload))
-  } else {
-    fallback <- read_version_cv(img_path, cfg, layout$form_pdf)
-    fallback$note <- paste(c(qr$note, fallback$note), collapse = " | ")
-    fallback
-  }
+
   answers <- read$answers
-  uncertain <- any(grepl("\\*$", unlist(answers), perl = TRUE))
+  uncertain <- isTRUE(read$uncertain)
   notes <- read$notes
-  if (!isTRUE(read$marker_ok)) notes <- c(notes, "registration marker detection failed")
+
   if (isTRUE(zid$uncertain) && nzchar(zid$note)) notes <- c(notes, zid$note)
   if (isTRUE(version$uncertain)) notes <- c(notes, version$note)
+
+  # A page is only trusted when every part of it was read cleanly. Anything
+  # less goes to a human rather than into the gradebook.
+  # A sheet the sequence check had to recover (scanned back first, or a side
+  # identified from the other) is marked, but a person confirms it.
+  recovered <- !is.na(seq_status) && startsWith(seq_status, "ok:")
+  if (recovered) notes <- c(notes, sub("^ok: ", "", seq_status))
+  needs_review <- uncertain || isTRUE(zid$uncertain) || isTRUE(version$uncertain) ||
+    !isTRUE(read$marker_ok) || (on_front && is.na(zid$zid)) || recovered
 
   list(
     page         = page_num,
@@ -601,35 +933,114 @@ cv_parse_page <- function(img_path, page_num, cfg, layout, sheet_page = NA_integ
     name         = NA_character_,
     exam_version = version$version,
     answers      = answers,
-    confidence   = if (uncertain || isTRUE(zid$uncertain) || isTRUE(version$uncertain)) "medium" else "high",
+    confidence   = if (needs_review) "medium" else "high",
+    needs_review = needs_review,
     notes        = paste(notes, collapse = " | "),
-    error        = NA_character_
+    error        = NA_character_,
+    layout       = layout
   )
+}
+
+# A layout set is a named list of per-version layouts; a single layout is the
+# list load_layout() returns.
+is_layout_set <- function(x) is.list(x) && !("ANSWER_X" %in% names(x))
+
+#' Calibrate every version's form at marking time
+#'
+#' Reads the bubble positions for each exam version straight from its
+#' `quizform_v<N>.pdf`. Marking against the forms themselves means a layout
+#' can never be older than the paper it is reading.
+#'
+#' @param cfg A loaded exam config.
+#' @param forms_dir Folder holding `quizform_v<N>.pdf` for every version.
+#' @return A named list of layouts, one per version.
+#' @export
+form_layouts <- function(cfg, forms_dir) {
+  pdfs <- file.path(forms_dir, sprintf("quizform_v%s.pdf", cfg$valid_versions))
+  missing <- pdfs[!file.exists(pdfs)]
+  if (length(missing)) {
+    stop("Form PDF(s) not found: ", paste(missing, collapse = ", "), call. = FALSE)
+  }
+  out <- lapply(pdfs, function(pdf) {
+    lay <- suppressMessages(layout_from_form(cfg, pdf))
+    lay$n_rows <- NULL
+    attr(lay, "form_pdf") <- normalizePath(pdf)
+    lay
+  })
+  stats::setNames(out, cfg$valid_versions)
+}
+
+# Refuse a layout.R that is older than the forms it describes. Rebuilding the
+# forms moves the bubbles, and a stale layout reads every answer from the
+# wrong place without any other sign that something is wrong.
+check_layout_fresh <- function(layout_path) {
+  src <- grep("^# Source: ", readLines(layout_path, n = 5), value = TRUE)
+  forms <- Sys.glob(file.path(dirname(layout_path), "quizform_v*.pdf"))
+  if (length(src)) forms <- c(forms, sub("^# Source: ", "", src))
+  forms <- forms[file.exists(forms)]
+  newer <- forms[file.mtime(forms) > file.mtime(layout_path)]
+  if (length(newer)) {
+    stop("Layout file ", layout_path, " is older than ",
+         paste(basename(unique(newer)), collapse = ", "),
+         ".\nThe forms were rebuilt after calibration; re-run calibrate_coords(), ",
+         "or pass `forms` to mark from the form PDFs directly.", call. = FALSE)
+  }
+  invisible(TRUE)
+}
+
+# resolve_layouts: decide what the marker reads bubbles against. A layout list
+# passed in is used as given. Otherwise the form PDFs win whenever they are
+# present -- `forms`, or the folder holding layout.R -- because they are the
+# paper itself; layout.R is only a fallback, and a stale one is refused.
+resolve_layouts <- function(cfg, layout, forms = NULL) {
+  if (is.list(layout)) return(layout)
+  forms_dir <- forms %||% dirname(layout)
+  pdfs <- file.path(forms_dir, sprintf("quizform_v%s.pdf", cfg$valid_versions))
+  if (all(file.exists(pdfs))) {
+    message("Calibrating ", length(pdfs), " version(s) from the form PDFs in ", forms_dir)
+    return(form_layouts(cfg, forms_dir))
+  }
+  if (!is.null(forms)) {
+    stop("Form PDF(s) not found: ", paste(pdfs[!file.exists(pdfs)], collapse = ", "),
+         call. = FALSE)
+  }
+  lay <- load_layout(layout)
+  check_layout_fresh(layout)
+  lay
 }
 
 #' Mark scanned forms using deterministic computer vision
 #'
-#' Reads calibrated answer, zID and version bubbles directly from scan pixels
-#' (ink sampled at each calibrated bubble center; no API call). Every page this
-#' processes is currently marked `needs_review = TRUE` regardless of outcome,
-#' as a blanket safety net while this path is newer and less proven than
-#' [mark_scans()] -- check the per-answer notes column (a trailing `*` marks
-#' genuine bubble-level ambiguity) rather than treating every flagged row as
-#' equally uncertain.
+#' Reads answer and zID bubbles directly from scan pixels. Each page's version
+#' comes from its QR code, and the page is read against that version's own
+#' form. A page is flagged `needs_review` only when something on it was not
+#' read cleanly: an ambiguous bubble, an unreadable zID digit, an unreadable
+#' QR, or failed registration.
 #'
 #' @param dir Folder created by [preprocess_scans()].
 #' @param config Path to the exam config YAML, or a loaded config list.
-#' @param layout Path to the calibrated layout file, or a loaded layout list.
+#' @param layout Path to the calibrated layout file, or a loaded layout list
+#'   (a single layout, or a per-version set from [form_layouts()]). When the
+#'   folder holding the layout file also holds `quizform_v<N>.pdf` for every
+#'   version, those forms are calibrated directly and the file is not used.
+#' @param forms Folder holding `quizform_v<N>.pdf` for every version. Defaults
+#'   to the folder holding `layout`.
 #' @param dry_run Process only the first 3 pending pages.
 #' @return Invisibly, the updated progress data frame.
 #' @export
 mark_scans_cv <- function(dir,
                           config = default_config_path(),
                           layout = "output/layout.R",
+                          forms = NULL,
                           dry_run = FALSE) {
+  # Cache blank pages only for this invocation. Different scans and test
+  # fixtures generally use different paths, so a process-wide cache grows
+  # without bound and can exhaust ImageMagick's Linux cache limits.
+  clear_blank_cache()
+  on.exit(clear_blank_cache(), add = TRUE)
   if (!dir.exists(dir)) stop("Directory not found: ", dir, call. = FALSE)
   cfg <- if (is.list(config)) config else load_exam_config(config)
-  layout <- if (is.list(layout)) layout else load_layout(layout)
+  layout <- resolve_layouts(cfg, layout, forms)
 
   csv_path <- file.path(dir, "progress.csv")
   if (!file.exists(csv_path)) {
@@ -641,15 +1052,6 @@ mark_scans_cv <- function(dir,
 
   message("Loading progress CSV: ", csv_path)
   progress <- readr::read_csv(csv_path, show_col_types = FALSE)
-  baseline <- form_baseline(layout, cfg)
-  if (nrow(progress) > 0) {
-    scan_w <- magick::image_info(magick::image_read(file.path(dir, progress$file[1])))$width
-    if (scan_w != baseline$width) {
-      warning("Scans are ", scan_w, " px wide but the blank form baseline is ",
-              baseline$width, " px. Rescan at the preprocess DPI (150) or the blank ",
-              "baseline will not match.", call. = FALSE)
-    }
-  }
   if (!("name" %in% names(progress))) progress$name <- NA_character_
 
   # Sheet grouping from check_scan_sequence(), when it has been run. Without it
@@ -661,6 +1063,8 @@ mark_scans_cv <- function(dir,
     m <- match(basename(progress$file), seq_df$file)
     progress$sheet      <- seq_df$sheet[m]
     progress$sheet_page <- seq_df$page_no[m]
+    seq_version <- as.character(seq_df$version[m])
+    seq_status  <- as.character(seq_df$status[m])
     n_broken <- sum(is.na(progress$sheet))
     message("Using scan sequence: ", length(unique(stats::na.omit(progress$sheet))),
             " sheet(s)", if (n_broken) sprintf(", %d page(s) not in a complete sheet", n_broken) else "")
@@ -669,9 +1073,12 @@ mark_scans_cv <- function(dir,
               "attributed to a student. See ", seq_path, call. = FALSE)
     }
   } else {
+    seq_version <- rep(NA_character_, nrow(progress))
+    seq_status  <- rep(NA_character_, nrow(progress))
     if (!("sheet" %in% names(progress))) progress$sheet <- NA_integer_
     if (!("sheet_page" %in% names(progress))) progress$sheet_page <- NA_integer_
-    n_form_pages <- length(unique(stats::na.omit(as.integer(layout$QUESTION_PAGE))))
+    first <- if (is_layout_set(layout)) layout[[1]] else layout
+    n_form_pages <- length(unique(stats::na.omit(as.integer(first$QUESTION_PAGE))))
     if (n_form_pages > 1) {
       warning("This form has ", n_form_pages, " pages but no scan_sequence.csv was found. ",
               "Run check_scan_sequence() first, or page 2 answers cannot be attributed.",
@@ -691,7 +1098,8 @@ mark_scans_cv <- function(dir,
     message(sprintf("  Page %d / %d  [%s] ...", page_num, nrow(progress), progress$file[idx]))
 
     parsed <- tryCatch(
-      cv_parse_page(img_path, page_num, cfg, layout, progress$sheet_page[idx], baseline),
+      cv_parse_page(img_path, page_num, cfg, layout, progress$sheet_page[idx],
+                    seq_version = seq_version[idx], seq_status = seq_status[idx]),
       error = function(e) list(
         page = page_num, ok = FALSE, zid = NA_character_, name = NA_character_,
         exam_version = NA_character_, answers = NULL, confidence = NA_character_,
@@ -699,7 +1107,7 @@ mark_scans_cv <- function(dir,
       )
     )
     progress <- update_progress_row(progress, idx, parsed, cfg, api_call_ok = NA)
-    progress$needs_review[idx] <- TRUE
+    progress$needs_review[idx] <- !isTRUE(parsed$ok) || isTRUE(parsed$needs_review)
     if (isTRUE(parsed$ok)) {
       ans_line <- paste(sprintf("Q%s=%s", names(parsed$answers),
                                 ifelse(nzchar(unlist(parsed$answers)),
@@ -712,9 +1120,10 @@ mark_scans_cv <- function(dir,
     }
     save_progress(progress, idx, csv_path)
     tryCatch(
-      annotate_page(img_path, parsed, marked_dir, cfg, layout),
+      annotate_page(img_path, parsed, marked_dir, cfg, parsed$layout),
       error = function(e) message("    [annotate] failed: ", conditionMessage(e))
     )
+    free_page_images()
   }
 
   cat("\n========================================\n")
@@ -761,4 +1170,3 @@ update_progress_row <- function(progress, idx, parsed, cfg, api_call_ok = TRUE) 
 
   progress
 }
-

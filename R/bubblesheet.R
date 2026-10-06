@@ -269,9 +269,18 @@ render_xelatex <- function(tex_path, outdir = dirname(tex_path)) {
     status <- system2("xelatex", args, stdout = FALSE, stderr = FALSE)
   }
   pdf_path <- file.path(outdir, paste0(job, ".pdf"))
-  if (!file.exists(pdf_path)) {
+  # nonstopmode carries on past errors and usually still writes a PDF -- a
+  # missing font, say, gives a form with no text on it. So an error status
+  # fails the render even when a PDF exists, and the log's errors are shown.
+  if (!identical(as.integer(status), 0L) || !file.exists(pdf_path)) {
     log_path <- file.path(outdir, paste0(job, ".log"))
-    if (file.exists(log_path)) writeLines(utils::tail(readLines(log_path, warn = FALSE), 25))
+    if (file.exists(log_path)) {
+      log <- readLines(log_path, warn = FALSE)
+      errs <- grep("^!", log)
+      shown <- if (length(errs)) unique(unlist(lapply(errs, function(i) i:min(i + 3L, length(log)))))
+               else max(1L, length(log) - 24L):length(log)
+      writeLines(log[shown])
+    }
     stop("xelatex failed for ", tex_path, call. = FALSE)
   }
   for (ext in c(".aux", ".log")) unlink(file.path(outdir, paste0(job, ext)))

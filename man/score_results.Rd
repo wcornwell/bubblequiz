@@ -8,21 +8,31 @@ score_results(
   dir,
   key = "output/answer_key.csv",
   config = default_config_path(),
-  output = NULL
+  output = NULL,
+  review = NULL
 )
 }
 \arguments{
-\item{dir}{Folder created by [preprocess_scans()] and filled in by [mark_scans()].}
+\item{dir}{Folder created by [preprocess_scans()] and filled in by [mark_scans_cv()].}
 
 \item{key}{Path to `answer_key.csv` from [generate_versions()].}
 
 \item{config}{Path to the exam config YAML, or a loaded config list.}
 
 \item{output}{Output CSV path; defaults to `results.csv` inside `dir`.}
+
+\item{review}{The quiz's review file (see [export_moodle()]); decisions in it
+for sheets in this scan folder are applied as overrides.}
 }
 \value{
 Invisibly, the results data frame.
 }
 \description{
-Score marked bubble sheets against the answer key
+Corrections go in `overrides.csv` in the scan folder, one row per change,
+with columns `file`, `page`, `zid`, `name`, `question`, `response`. Identify
+the sheet by `file` (any page of it, e.g. `page_0036.png`) or by `zid`.
+`question` is a question number (`response` = the letter, or blank for
+unanswered), `zid` (`response` = the corrected zID), `ok` (checked, no
+change needed), or `exclude` (leave the sheet out, e.g. it was rescanned). Any row for a sheet marks it reviewed; a sheet still needs
+review while it holds an uncertain answer (`B*`) or an invalid zID.
 }

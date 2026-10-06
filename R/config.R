@@ -24,10 +24,19 @@ default_config_path <- function() {
 #' @export
 bq_file <- function(...) {
   p <- system.file(..., package = "bubblequiz")
-  if (!nzchar(p)) {
-    stop("bubblequiz install is missing: ", file.path(...), call. = FALSE)
+  if (nzchar(p)) return(p)
+  # Course folders often source R/*.R straight from a checkout rather than
+  # installing the package, in which case system.file() finds nothing and the
+  # bundled templates are unreachable. options(bubblequiz.root = "<checkout>")
+  # points at the source tree so inst/ resolves the same way.
+  root <- getOption("bubblequiz.root")
+  if (!is.null(root)) {
+    cand <- file.path(root, "inst", ...)
+    if (file.exists(cand)) return(cand)
   }
-  p
+  stop("bubblequiz install is missing: ", file.path(...),
+       "\n  Install the package, or set options(bubblequiz.root = \"<checkout>\").",
+       call. = FALSE)
 }
 
 # ---------------------------------------------------------------------------

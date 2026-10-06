@@ -31,7 +31,7 @@ jobs:
       # (libmagick++ for magick, qpdf, etc.) on Ubuntu.
       - uses: r-lib/actions/setup-r-dependencies@v2
         with:
-          extra-packages: any::rcmdcheck
+          extra-packages: any::rcmdcheck, any::pkgload
           needs: check
 
       # The check suite does not call xelatex or zbarimg, but install them so
@@ -41,9 +41,15 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             poppler-utils imagemagick qpdf zbar-tools \
-            texlive-xetex texlive-latex-extra
+            texlive-xetex texlive-latex-extra fonts-texgyre
 
       - uses: r-lib/actions/check-r-package@v2
         with:
           args: 'c("--no-manual")'
           error-on: '"warning"'
+
+      # The real-scan fixture and the worked example are left out of the built
+      # package, so R CMD check skips the tests that mark them. Run the suite
+      # again from the source tree, where they are present.
+      - name: Test against real scans (source tree)
+        run: Rscript -e 'testthat::test_local(reporter = "summary")'

@@ -7,7 +7,7 @@
 preprocess_scans(
   pdf,
   config = default_config_path(),
-  dpi = 150,
+  dpi = 200,
   format = "png",
   force = FALSE
 )
@@ -17,7 +17,8 @@ preprocess_scans(
 
 \item{config}{Path to the exam config YAML, or a loaded config list.}
 
-\item{dpi}{Resolution for the extracted page images.}
+\item{dpi}{Resolution for the extracted page images. 200 matches the usual
+scanner setting; much lower and the page QR codes stop decoding reliably.}
 
 \item{format}{Image format for extracted pages, usually `"png"` or `"jpeg"`.}
 

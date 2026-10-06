@@ -27,16 +27,46 @@ down to "is this box dark or light." Where a mark is genuinely ambiguous —
 a half-filled bubble, a smudge, a stray mark — bubblequiz doesn't guess; it
 flags the row for a human to look at instead.
 
-The package is the reusable engine. Course-specific files such as `exam.yml`, `questions.md`, transcripts, scans, and outputs live in an external course folder.
+In short: write the questions once, print shuffled QR-coded forms, scan the
+completed sheets, mark them with local computer vision, and upload the grades
+to Moodle.
 
-## What It Does
+```text
+exam.yml + questions.md
+        │  generate_versions()   make_quiz_forms()   combine_quiz_forms()
+        ▼
+output/quizforms_all_versions.pdf  ──►  print duplex, students fill in bubbles
+                                                    │
+                                                    ▼
+week2_scans/*.pdf  ──►  mark_quiz()  ──►  review.csv  ──►  mark_quiz()  ──►  moodle_import.csv
+```
 
-- Defines quiz shape once in `exam.yml`.
-- Generates multiple randomized versions from `questions.md`, so students sitting next to each other don't have matching sheets to glance across.
-- Prints one integrated form per version: questions, answer bubbles, student-ID bubbles, and a QR anchor carrying the version and page metadata.
-- Combines all versions into one print PDF for easy duplex printing.
-- Reads completed scans with a local computer-vision marker — no cloud call, no student data leaving your machine.
-- Scores each student's sheet against the correct version-specific answer key, and flags anything ambiguous for manual review instead of silently guessing.
+- **One config.** The quiz shape (sections, marks, versions, zID format) lives
+  in `exam.yml`; questions live in a plain Markdown file.
+- **Shuffled versions.** Question and option order is randomised per version.
+  Every page carries a QR code with its version and page number, so marking
+  uses the right answer key automatically.
+- **Local, deterministic marking.** Bubbles and zIDs are read from the scan
+  with image processing, and the same scan always gives the same result.
+- **It never guesses.** Anything not read cleanly (corrections, faint marks,
+  skewed pages, unknown zIDs, feeder errors) goes to a review file for a
+  person to decide. Those decisions are kept as a permanent record.
+- **Offline.** Nothing is sent to any outside service.
+
+The package is the reusable engine. Each course keeps its own `exam.yml`,
+`questions.md`, scans and outputs in a separate course folder.
+
+## Contents
+
+- [Installation](#installation)
+- [Quick start](#quick-start)
+- [The course folder](#the-course-folder)
+- [Printing and scanning](#printing-and-scanning)
+- [Marking](#marking)
+- [Reviewing flagged sheets](#reviewing-flagged-sheets)
+- [How it works](#how-it-works)
+- [Command line](#command-line)
+- [Worked example](#worked-example)
 
 ## Installation
 
@@ -45,60 +75,55 @@ The package is the reusable engine. Course-specific files such as `exam.yml`, `q
 remotes::install_github("wcornwell/bubblequiz")
 ```
 
-bubblequiz requires R 4.1 or later. Printing and QR decoding also need some
-external tools; see [External Tools](#external-tools).
+System tools (macOS with Homebrew shown):
 
-## Worked Example
+| Tool | Needed for | Install |
+|---|---|---|
+| XeLaTeX + `qrcode` package, pandoc | rendering forms | MacTeX or TeX Live; `brew install pandoc` |
+| poppler (`pdftoppm`) | rendering scans to images | `brew install poppler` |
+| zbar (`zbarimg`) | reading QR codes | `brew install zbar` |
+| ImageMagick | image processing | `brew install imagemagick` |
 
-A complete generated example is included in this repository at:
+On Debian or Ubuntu:
+`sudo apt install poppler-utils zbar-tools texlive-xetex texlive-latex-extra`.
 
-```text
-example/six-question-quiz/
+## Quick start
+
+```r
+library(bubblequiz)
+
+init_course("my-quiz")       # starter exam.yml, questions.md and Makefile
+setwd("my-quiz")
+# ... edit exam.yml and questions.md ...
+
+check_config("exam.yml")     # validate the config and show the layout it implies
+generate_versions("exam.yml", "questions.md", "output")
+make_quiz_forms("exam.yml", "output")
+combine_quiz_forms("exam.yml", "output")
 ```
 
-This is intentionally laid out like a small external course repository: it has
-its own `exam.yml`, `questions.md`, generated version files, answer key, and
-print PDF. The main file to inspect or print is:
+Print `output/quizforms_all_versions.pdf` double-sided and run the quiz. Then
+put the scanned PDFs in a folder and mark:
 
-```text
-example/six-question-quiz/output/quizforms_all_versions.pdf
+```r
+mark_quiz("week2_scans", config = "exam.yml", forms = "output",
+          grade_item = "Week 2 quiz", roster = "gradebook_export.csv")
 ```
 
-For the example, each student receives one double-sided sheet. The combined PDF is ordered by version:
+Work through `week2_scans/review.csv`, run `mark_quiz()` again, and upload
+`week2_scans/moodle_import.csv`.
 
-```text
-Version 1: pages 1-2
-Version 2: pages 3-4
-Version 3: pages 5-6
-Version 4: pages 7-8
-```
-
-The manifest explains exactly what is in the example and how to rebuild it:
-
-```text
-example/six-question-quiz/MANIFEST.md
-```
-
-`calibrate_coords()` reads every page of the rendered form, not just the
-first, and `check_scan_sequence()` / `aggregate_sheets()` (below) group a
-multi-page scan stack into one record per student before scoring. A
-single-page quiz needs none of that machinery — every page is already a
-whole sheet — so it stays the simplest case, but multi-page duplex forms are
-marked live, not just printed for review.
-
-## Course Folder Layout
-
-A course folder usually looks like this:
+## The course folder
 
 ```text
 my-quiz/
-  exam.yml
-  questions.md
-  output/
-  scans.pdf
+  exam.yml          quiz structure
+  questions.md      question bank with answers
+  output/           generated versions, answer key and print PDFs
+  week2_scans/      scanned PDFs, and everything marking writes
 ```
 
-`exam.yml` controls the structure:
+### `exam.yml`
 
 ```yaml
 course: BES2041
@@ -116,7 +141,7 @@ id:
   digits: 7
 
 layout:
-  columns: 1
+  columns: 1        # inline quiz forms require a single column
 
 sections:
   - id: A
@@ -125,7 +150,10 @@ sections:
     marks_each: 1
 ```
 
-`questions.md` contains questions, options, and answer comments:
+### `questions.md`
+
+Write the file by hand. Each question has its options and an HTML comment
+giving the answer:
 
 ```markdown
 **Question 1 [1 mark]:** What is the best interpretation of RMSE?
@@ -157,49 +185,167 @@ when a quiz is already long.
 Dollar signs that do not pair up as math (`costs $5 and $10`) stay literal, and
 `\$` is always a literal dollar sign. Everything else is escaped as before.
 
-## Build A Quiz
+### How many questions fit
 
-Write `questions.md` by hand (or with whatever drafting tool you like — bubblequiz
-doesn't care how the questions were written, only that they follow the format
-above). From a course folder, with bubblequiz installed:
-
-```r
-library(bubblequiz)
-
-generate_versions("exam.yml", "questions.md", "output")
-make_quiz_forms("exam.yml", "output")
-combine_quiz_forms("exam.yml", "output")
-calibrate_coords("exam.yml", "output/quizform_v1.pdf", "output/layout.R", "output/layout_preview.jpeg")
-```
-
-Print:
+With moderately wordy questions:
 
 ```text
-output/quizforms_all_versions.pdf
+6-8 questions    comfortable on one double-sided sheet
+10 questions     practical upper limit for one double-sided sheet
+11+ questions    spills onto a second sheet
 ```
 
-Use duplex printing. For six questions, each version fits on one double-sided sheet.
+Multi-page forms are marked correctly (see
+[How it works](#how-it-works)), but a single sheet per student is easier to
+handle and scan.
 
-## Scan Settings
+## Printing and scanning
 
-Use:
-
-```text
-Color or grayscale
-300 dpi
-No auto-crop if possible
-No text enhancement / high-contrast cleanup
-No auto-rotate if possible
-PDF output
-```
-
+Print `output/quizforms_all_versions.pdf` **duplex**. Versions are in order
+and each one stays together, so the stack can go straight to the printer.
 Students should use black or dark blue pen and fill bubbles completely.
 
-## How The Geometry Pipeline Works
+Scanner settings:
+
+```text
+Grayscale (colour works, but files are ~3x larger and it reads no better)
+200-300 dpi
+PDF output
+No auto-crop, auto-rotate, text enhancement or high-contrast cleanup
+```
+
+A 150-student stack can go through as one PDF or several. Sheet feeders
+sometimes swallow pages, double-feed or flip a sheet. Every page's QR code
+records its version, page number and sheet length, so `mark_quiz()` catches
+these errors before marking anything.
+
+## Marking
+
+Put every scan PDF for one quiz in a single folder and run:
+
+```r
+mark_quiz("week2_scans", config = "exam.yml", forms = "output",
+          grade_item = "Week 2 quiz")
+```
+
+This renders, sequence-checks, marks and scores every scan in the folder, and
+writes:
+
+```text
+week2_scans/moodle_import.csv   Username + grade: clean and resolved sheets only
+week2_scans/review.csv          every sheet that needs a person, and your decisions
+```
+
+Add `roster = "gradebook_export.csv"` (any CSV with a `Username` column, such
+as a Moodle gradebook export) to hold back any sheet whose zID is not
+enrolled. For each such sheet, the review reason lists enrolled zIDs that are
+one digit away or have two digits swapped, so you can match a misbubbled zID
+to the name written on the sheet.
+
+Running `mark_quiz()` again is quick: scans already marked are skipped unless
+their PDF has changed (or `remark = TRUE`). Upload `moodle_import.csv` once
+`review.csv` has nothing left open. In Moodle, go to **Grades > Import > CSV
+file** and map `Username` to "username" and the grade column to your grade
+item.
+
+### Spot-checking the marker
+
+```r
+spot_check("week2_scans", config = "exam.yml", forms = "output")
+```
+
+This writes `week2_scans/spot_check.html`, with an overlay image for a sample
+of sheets: pages rejected as crooked, pages that only just passed, zIDs not on
+the roster, and a random sample of untouched sheets. Each overlay shows the
+expected position of each printed anchor and each bubble, and which bubbles
+were read as filled. You can see at a glance that the marker is reading what
+students wrote.
+
+### Running the steps one at a time
+
+`mark_quiz()` runs these steps for each scan PDF:
+
+```r
+preprocess_scans("scans.pdf", "exam.yml", force = TRUE)   # PDF -> page images
+check_scan_sequence("scans")                              # group pages into sheets
+mark_scans_cv("scans", config = "exam.yml", forms = "output")
+aggregate_sheets("scans", config = "exam.yml")            # join pages per student
+score_results("scans", key = "output/answer_key.csv", config = "exam.yml",
+              review = "review.csv")
+export_moodle("scans", output = "moodle_import.csv", review = "review.csv",
+              grade_item = "Week 2 quiz", config = "exam.yml")
+```
+
+Files written in each scan folder:
+
+```text
+scan_sequence.csv   one row per page: version, page number, sheet
+progress.csv        one row per page, as read by the marker
+registration.csv    how well each page lined up with its blank form
+marked-cv/          each page with the recorded answers drawn on
+sheets.csv          one row per student, pages joined
+results.csv         scores, with needs_review, notes and answers as read
+```
+
+## Reviewing flagged sheets
+
+A sheet is flagged when anything on it was not read cleanly. `review.csv`
+gives the reason:
+
+```text
+two marks          two bubbles filled in one row: usually a correction;
+                   the crossed-out one is often darker, so neither is chosen
+faint mark         a mark too light to accept
+blank              an unanswered question, or an empty zID column
+ambiguous          two bubbles too close to call
+QR unreadable      version taken from the other side of the sheet
+back side first    a sheet put through the scanner the wrong way round
+out of register    the sheet went through skewed or shifted, so its printed
+                   text is not where it should be. Nothing on that page is
+                   read (answers show *, the zID ?). Rescan it straight.
+zID not on roster  the zID is not in the class list (when `roster` is given);
+                   the reason names the closest enrolled zIDs
+```
+
+Each row shows what was read: the `zid`, and `answers` as one letter per
+question (`*` uncertain, `-` unanswered). Four columns are for you to fill in:
+
+```text
+correct_zid       the right zID, if the one read is wrong or contains a ?
+correct_answers   only the answers that change: Q5=A, or Q2=B; Q5=- (- = blank)
+resolved          yes, once checked (needed only when nothing changes);
+                  exclude to leave the sheet out for good (e.g. it was rescanned)
+comment           free text, kept as written
+```
+
+**Rescanning.** Put the rescan in the quiz folder as its own PDF and run
+`mark_quiz()`, which marks the rescanned sheets in their own right. Then set
+`resolved = exclude` on the originals.
+
+**What reaches the upload.** A sheet goes into the upload once it is decided,
+but never while it still holds an uncertain answer (`B*`) or an invalid zID.
+Those must be set explicitly.
+
+**The review file is a record.** Rows are never dropped. Your columns,
+including any you add, are never overwritten. A typo in a decision stops the
+run and names the row.
+
+**Protection against lost edits.** Every run saves a dated copy of the review
+file in `.review_history/`. Sometimes decisions present after the last run
+disappear, typically because a spreadsheet opened before that run was saved
+after it. In that case `mark_quiz()` stops and lists the missing decisions
+rather than quietly undoing them. Restore them from the history, or pass
+`accept_review = TRUE` if you cleared them on purpose.
+
+Corrections can also go in `overrides.csv` in a scan folder
+(`file,page,zid,name,question,response`, where `question` is a number, `zid`
+or `ok`). `preprocess_scans()` never overwrites this file.
+
+## How it works
 
 bubblequiz never looks at a scanned page and guesses where the bubbles are. It
 renders the form, measures its own rendering, and reads scans back against
-those exact measurements — the same trick a scantron machine did with a
+those exact measurements, the same trick a scantron machine did with a
 physical template, done here with pixels.
 
 **1. Every printed sheet carries four anchors.** A 5mm black square sits 3mm
@@ -208,10 +354,11 @@ and page number.
 
 <img src="man/figures/geometry-registration-mark.png" width="260" alt="One corner of a printed sheet, showing the solid black registration square inset from the edge">
 
-**2. `calibrate_coords()` reads the rendered PDF, not the LaTeX source.** It
+**2. Calibration reads the rendered PDF, not the LaTeX source.** It
 pulls the (x, y) position of every printed option letter straight out of the
-PDF's own text layer, clusters them into bubble rows and columns, and writes
-the result to `layout.R` — one set of coordinates, normalised 0–1 across the
+PDF's own text layer and clusters them into bubble rows and columns. The
+marker does this from each version's blank form at marking time;
+`calibrate_coords()` writes the same result to `layout.R` — one set of coordinates, normalised 0–1 across the
 page, reused for every version and every scan of this quiz. A preview image
 confirms the fit by stamping each detected coordinate back onto the blank
 form:
@@ -233,41 +380,43 @@ a small circle at every bubble center that mapping predicts.
 </tr>
 </table>
 
-**4. Each bubble is compared with its own blank.** The printed letter inside a
-circle is dark ink too, and different letters carry different amounts (a B has
-more than an A). So `calibrate_coords()` also records how dark every bubble is
-on the blank form, and a scan is read against that baseline: a bubble counts as
-filled only if it is clearly darker than its own unfilled level. Then the
-darkest bubble in a row wins, unless two are close. If two circles are both
-dark and close in ink score, the row is ambiguous and gets flagged rather than
-guessed at. The same ink-sampling approach reads the student-ID grid (one
-column of digit bubbles per ID digit) and, when `zbar` can't decode the page's
-QR code, falls back to matching the ink pattern against each version's
-expected answer key to recover the version number. Every marked page is
-written back out with its reading overlaid, so a human can audit the call at
-a glance — orange for confident, red for anything flagged:
+**4. Each bubble is compared with the blank form.** The printed letter inside
+a circle is dark ink too, and different letters carry different amounts (a B
+has more than an A). So the blank form is rendered at the scan's own
+resolution, and each bubble's score is how much darker the scan is than the
+blank form at that spot. The printed letter cancels out, and only pen counts.
+The darkest bubble in a row wins, unless two are close, in which case the row
+is flagged. Every marked page is written back out with its reading overlaid
+(in `marked-cv/`), so a person can audit the call at a glance:
 
 <img src="man/figures/geometry-marked-page.jpeg" width="640" alt="Full marked quiz page: filled zID grid, Q1/Q2/Q4 circled in orange, Q3 circled in red because a second bubble was also inked">
 
-In this example sheet, Q3 has a stray second mark next to the intended
-answer; both bubbles register enough ink to be ambiguous, so the row is
-circled in red and flagged for review rather than scored automatically.
+**Version tracking.** Each page shows its version in text and in a QR code:
 
-## Check A Large Stack Before Marking
-
-A multi-page form is printed duplex, so a 150-student quiz arrives as one
-~300-page PDF whose pages must read 1,2,1,2 and so on. Sheet feeders swallow
-pages, double-feed and occasionally reverse a sheet, and none of that is
-visible in the page images alone. Every page carries a QR giving its version,
-its page number and the sheet length, so the stack can be checked before any
-marking happens:
-
-```r
-preprocess_scans("scans.pdf", "exam.yml", force = TRUE)
-check_scan_sequence("scans")
+```text
+bubblequiz|course=BES2041|version=3|questions=1,2,3,4,5,6
 ```
 
-Output:
+The marker uses the QR code to pick the answer-key column (e.g. `answer_v3`).
+If one side's QR is unreadable, the version is taken from the other side of
+the same sheet.
+
+**Calibration at marking time.** Because bubble positions are read from each
+version's blank `output/quizform_v<N>.pdf` when marking, a layout can never be
+older than the paper it reads. `calibrate_coords()` also writes a
+`layout_preview.jpeg` so you can check the positions by eye.
+
+**Registration.** Before reading any bubbles, the marker checks every page
+against the printed text it expects to find (the "Answer Qn" labels and the
+zID heading). A page fed skewed or shifted is refused and flagged as out of
+register. The marker does not try to read it.
+
+**zIDs.** Students fill one digit per column of the zID grid, which is read
+like the answer bubbles. An ambiguous or blank digit flags the sheet.
+
+**Stacks and multi-page forms.** Each page's QR code records its page number
+and the sheet length, so `check_scan_sequence()` can group a stack into
+sheets:
 
 ```text
 Pages:  300
@@ -282,136 +431,60 @@ PROBLEM PAGES: 1 -- rescan or handle these before marking
   page 7    page_0007.png          orphan page 2 (no page 1 before it)
 ```
 
-`scans/scan_sequence.csv` has a row per page with its assigned `sheet` number.
-One feeder error does not cascade: the walk resynchronises at the next page 1,
-so the rest of the stack still groups correctly and only the affected sheet
-needs rescanning.
+One feeder error does not cascade: grouping resynchronises at the next page 1,
+so only the affected sheet needs rescanning. The marker reads only the
+questions printed on each page, and reads the zID from the front page only.
+`aggregate_sheets()` then joins each sheet's pages into one student record.
+Pages that cannot be attributed to a complete sheet are left out of
+`sheets.csv` with a warning. A sheet missing a page is flagged. For
+single-page forms these steps do nothing extra, because every page is its own
+sheet.
 
-## Mark And Score
+## Command line
 
-Place the scan PDF in the course folder, for example:
-
-```text
-scans.pdf
-```
-
-Then run:
-
-```r
-preprocess_scans("scans.pdf", "exam.yml", force = TRUE)
-check_scan_sequence("scans")
-mark_scans_cv("scans", config = "exam.yml", layout = "output/layout.R")
-aggregate_sheets("scans", config = "exam.yml")
-score_results("scans", key = "output/answer_key.csv", config = "exam.yml")
-```
-
-Outputs:
-
-```text
-scans/scan_sequence.csv   one row per page: version, page number, sheet
-scans/progress.csv        one row per page, as read by the marker
-scans/marked-cv/          each page with the recorded answers drawn on
-scans/sheets.csv          one row per student, pages joined
-scans/results.csv         scores
-```
-
-Rows needing manual review are flagged in `progress.csv` and `sheets.csv`.
-`mark_scans_cv()` currently marks every CV-read page `needs_review` as a
-conservative default — check the per-answer notes column (a trailing `*`
-marks the bubble-level ambiguity that actually matters) rather than treating
-every flagged row as equally uncertain.
-
-For a single-page form, `check_scan_sequence()` and `aggregate_sheets()` are
-harmless no-ops: every page is its own sheet and `sheets.csv` matches
-`progress.csv`. For a multi-page form they are required, because the marker
-reads one page at a time and only the front of a sheet carries a zID grid.
-
-### How A Multi-Page Form Is Marked
-
-```text
-calibrate_coords()     reads every page of the blank form and records which
-                       page each question's bubble row is printed on
-check_scan_sequence()  reads the per-page QR and groups the stack into sheets
-mark_scans_cv()        reads only the questions printed on each page, and the
-                       zID from the front page only
-aggregate_sheets()     joins the pages of each sheet into one student record
-score_results()        scores sheets.csv when present, otherwise progress.csv
-```
-
-A page that cannot be attributed to a complete sheet is excluded from
-`sheets.csv` with a warning rather than being scored as a whole paper, and a
-sheet that is short a page is flagged for review.
-
-## Version Tracking
-
-Each printed form includes:
-
-- visible version text, e.g. `Version 3`
-- a QR code containing machine-readable metadata
-
-Example QR payload:
-
-```text
-bubblequiz|course=BES2041|version=3|questions=1,2,3,4,5,6
-```
-
-The CV marker uses this QR code to select the correct answer-key column, such as `answer_v3`.
-
-## zID Reading
-
-The form includes a zID digit grid. Students fill one digit per column. The CV marker reads those bubbles directly from the scan.
-
-If a digit is ambiguous, the row is flagged for manual review.
-
-## Question Count
-
-With the current layout and moderately wordy questions:
-
-```text
-6-8 questions: comfortable
-10 questions: practical upper limit for one double-sided sheet
-11+ questions: likely spills beyond one double-sided sheet
-```
-
-Shorter questions fit better; longer questions may reduce the limit. Beyond
-that, a quiz simply runs to more pages — `calibrate_coords()` and
-`mark_scans_cv()` are page-aware, so a multi-page duplex form is marked the
-same way a single-page one is, just with `check_scan_sequence()` and
-`aggregate_sheets()` doing the extra bookkeeping of joining pages back into
-one sheet per student (see above).
-
-## External Tools
-
-bubblequiz calls two external programs:
-
-- **zbar** (`zbarimg`) decodes the QR codes on scanned pages.
-- **XeLaTeX** with the TeX Live `qrcode` package typesets the printed forms.
-
-On macOS (Homebrew, with [MacTeX](https://tug.org/mactex/) or BasicTeX):
+Every step is also available as a `bubblequiz` subcommand, for driving a
+course folder from a Makefile (`init_course()` writes one). Put a small
+wrapper on your `PATH`:
 
 ```bash
-brew install zbar
-sudo tlmgr install qrcode   # if your TeX installation lacks the package
+#!/bin/sh
+exec Rscript -e 'bubblequiz::bq_cli()' "$@"
 ```
-
-On Debian or Ubuntu:
 
 ```bash
-sudo apt install zbar-tools texlive-xetex texlive-latex-extra
+bubblequiz init
+bubblequiz check
+bubblequiz build                     # versions + forms + combined PDF + calibration
+bubblequiz preprocess week2_scans/scans.pdf
+bubblequiz mark-cv --dir week2_scans/scans
+bubblequiz --help                    # all commands and options
 ```
 
-## Running The Tests
+## Worked example
 
-From a clone of the repository:
+`example/six-question-quiz/` is laid out like a small course folder. It has
+its own `exam.yml`, `questions.md`, generated versions, answer key and print
+PDF. `MANIFEST.md` describes its contents and how to rebuild it. The file to
+print is `output/quizforms_all_versions.pdf`, with one double-sided sheet per
+student:
+
+```text
+Version 1: pages 1-2     Version 3: pages 5-6
+Version 2: pages 3-4     Version 4: pages 7-8
+```
+
+## Development
 
 ```r
-devtools::test()
+devtools::test()     # full suite, including marking the real-scan fixture
+devtools::check()
 ```
 
-`tests/test_layout.R` is a regression check that the layout derived from the
-example config matches the original hand-written BEES2041 tables exactly. It
-runs as part of `R CMD check`, which is also what CI runs on every push and
-pull request.
+The marking tests need `pdftoppm` and `zbarimg` on the `PATH`, and skip
+without them. GitHub Actions runs `R CMD check` and the full suite on every
+push to `main` and on every pull request. `tests/test_layout.R` checks that the
+layout derived from the example config matches the original hand-written
+BEES2041 tables exactly.
 
 ## License
 
