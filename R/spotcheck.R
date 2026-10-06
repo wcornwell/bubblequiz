@@ -89,6 +89,7 @@ spot_check <- function(folder,
       p <- pages[k, ]
       out <- file.path(img_dir, sprintf("%s_%s.jpeg", p$scan, tools::file_path_sans_ext(p$file)))
       overlay_page(file.path(folder, p$scan, "pages", p$file), p, cfg, layouts, out)
+      free_page_images()
       full <- file.path(p$scan, "pages", p$file)
       sprintf(paste0('<figure><a href="%s"><img src="%s" loading="lazy"></a><figcaption>%s p%d &middot; ',
                      '<span class="%s">%s</span> &middot; %d/4 corner markers &middot; ',
@@ -167,6 +168,7 @@ page_registration <- function(dir, cfg, layouts) {
     v <- if (!is.na(version[k]) && version[k] %in% names(layouts)) version[k] else names(layouts)[1]
     page_no <- if (is.na(seq_df$page_no[k])) 1L else as.integer(seq_df$page_no[k])
     r <- register_page(file.path(dir, "pages", seq_df$file[k]), cfg, layouts[[v]], page_no)
+    free_page_images()
     data.frame(scan = basename(dir), file = seq_df$file[k], page_no = page_no, version = v,
                registered = r$registered, error = r$error, markers = r$ctx$markers,
                angle = round(page_angle(r$ctx$map_xy), 2), stringsAsFactors = FALSE)

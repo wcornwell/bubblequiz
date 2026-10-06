@@ -55,6 +55,15 @@ load_layout <- function(path = "output/layout.R") {
 }
 
 # ---------------------------------------------------------------------------
+# free_page_images: a magick image is a small R object holding a large
+# ImageMagick pixel buffer, so R's garbage collector sees no memory pressure
+# and rarely runs; across a few hundred pages the buffers pile up until
+# ImageMagick's cache is exhausted (on Linux, whose limits are low, that is an
+# abort, not an error). Every loop over pages calls this once per page.
+# ---------------------------------------------------------------------------
+free_page_images <- function() invisible(gc(verbose = FALSE))
+
+# ---------------------------------------------------------------------------
 # save_progress: write progress CSV to disk
 # ---------------------------------------------------------------------------
 save_progress <- function(progress, idx, csv_path) {
@@ -1096,6 +1105,7 @@ mark_scans_cv <- function(dir,
       annotate_page(img_path, parsed, marked_dir, cfg, parsed$layout),
       error = function(e) message("    [annotate] failed: ", conditionMessage(e))
     )
+    free_page_images()
   }
 
   cat("\n========================================\n")

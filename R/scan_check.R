@@ -257,6 +257,7 @@ check_scan_sequence <- function(scans, output = file.path(scans, "scan_sequence.
   message("Reading QR codes from ", length(imgs), " page(s)...")
   readings <- lapply(seq_along(imgs), function(i) {
     if (i %% 50 == 0) message("  ", i, "/", length(imgs))
+    on.exit(free_page_images())
     page_reading(decode_qr_all(imgs[i]))
   })
 

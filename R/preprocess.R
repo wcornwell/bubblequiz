@@ -128,7 +128,10 @@ render_pdf_pages <- function(pdf, dpi, format, filenames) {
 # pages. Every printed form carries black corner markers and a QR, so a page
 # with no dark pixels at all was not rendered, whatever the student wrote.
 check_pages_not_blank <- function(img_paths) {
-  blank <- vapply(img_paths, page_is_blank, logical(1))
+  blank <- vapply(img_paths, function(p) {
+    on.exit(free_page_images())
+    page_is_blank(p)
+  }, logical(1))
   if (any(blank)) {
     stop(sum(blank), " of ", length(img_paths), " rendered page(s) are blank (",
          paste(utils::head(basename(img_paths[blank]), 5), collapse = ", "),
@@ -159,6 +162,7 @@ fix_upside_down_pages <- function(img_paths) {
       magick::image_write(img, p)
       rotated <- c(rotated, p)
     }
+    free_page_images()
   }
   rotated
 }
