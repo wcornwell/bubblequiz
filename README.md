@@ -185,6 +185,33 @@ when a quiz is already long.
 Dollar signs that do not pair up as math (`costs $5 and $10`) stay literal, and
 `\$` is always a literal dollar sign. Everything else is escaped as before.
 
+### Code
+
+`` `backticks` `` in stems, options and captions print as inline code in a
+monospace font: `` `group_by()` ``, `` `read_csv("data/x.csv")` ``. Everything
+inside is printed literally, including `$`, `%` and `_`.
+
+A question can also show one fenced code block between the stem and the
+options, with more stem text after it if needed:
+
+````markdown
+**Question 3 [1 mark]:** Consider this code:
+
+```r
+flow |>
+  group_by(month) |>
+  summarise(q = mean(flow_mm))
+```
+
+How many rows does the result have?
+
+a. ...
+````
+
+The block is printed verbatim, with its indentation and blank lines kept.
+Option shuffling never looks inside it, so a line that starts `a. ` there is
+safe.
+
 ### How many questions fit
 
 With moderately wordy questions:

@@ -20,13 +20,43 @@ tex_escape <- function(x) {
   x
 }
 
+# Escape question text for LaTeX. Backtick spans are inline code: every
+# character inside is escaped literally (no math) and set by \bqcode, so
+# `group_by()` prints as code rather than between quote marks. The text
+# between code spans goes through tex_escape_math_text().
+tex_escape_math <- function(x) {
+  x <- as.character(x)
+  vapply(x, function(s) {
+    if (is.na(s)) return(NA_character_)
+    m <- gregexpr("`[^`]+`", s)[[1]]
+    if (m[1] == -1L) return(tex_escape_math_text(s))
+    starts <- as.integer(m)
+    ends   <- starts + attr(m, "match.length") - 1L
+    out <- character(0)
+    pos <- 1L
+    for (k in seq_along(starts)) {
+      if (starts[k] > pos) out <- c(out, tex_escape_math_text(substr(s, pos, starts[k] - 1L)))
+      out <- c(out, code_tex(substr(s, starts[k] + 1L, ends[k] - 1L)))
+      pos <- ends[k] + 1L
+    }
+    if (pos <= nchar(s)) out <- c(out, tex_escape_math_text(substr(s, pos, nchar(s))))
+    paste(out, collapse = "")
+  }, character(1), USE.NAMES = FALSE)
+}
+
+# One inline code span. \bqcode (defined in each paper preamble) sets it in
+# the mono font with straight quotes; every character is escaped literally.
+code_tex <- function(code) {
+  sprintf("\\bqcode{%s}", tex_escape(code))
+}
+
 # Like tex_escape(), but passes `$...$` spans through as LaTeX math. Pandoc's
 # rule decides what counts as math, so prices stay literal: the opening `$`
 # must be followed by a non-space, the closing `$` preceded by a non-space and
 # not followed by a digit. `\$` is a literal dollar sign. Inside math only `%`
 # and `#` are escaped (a stray `%` would comment out the rest of the line).
 # Anything that does not pair up is escaped exactly as tex_escape() would.
-tex_escape_math <- function(x) {
+tex_escape_math_text <- function(x) {
   x <- as.character(x)
   math_re <- "(?<!\\\\)\\$(?=[^\\s$])(?:[^$\\\\]|\\\\.)*?(?<=[^\\s\\\\])\\$(?![0-9])"
   escape_outside <- function(txt) {

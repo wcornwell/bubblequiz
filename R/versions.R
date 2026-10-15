@@ -88,7 +88,7 @@ relative_path <- function(target, from) {
 # questions.md. The shuffled copies live in `outdir`, so re-point those paths
 # there; otherwise every figure would break the moment it is rendered.
 relativise_figure_paths <- function(lines, from_dir, to_dir) {
-  is_fig <- grepl(figure_line_regex, lines, perl = TRUE)
+  is_fig <- grepl(figure_line_regex, lines, perl = TRUE) & !inside_code_fence(lines)
   for (i in which(is_fig)) {
     path <- sub(figure_line_regex, "\\2", lines[i], perl = TRUE)
     if (grepl("^(/|[A-Za-z]:)", path)) next
@@ -107,10 +107,15 @@ process_version <- function(lines, perm, version_label, opts_lower) {
   out <- c(paste0("# Version ", version_label), "", lines)
 
   starts_with <- function(line, letter) grepl(paste0("^", letter, "\\.\\s"), line)
+  in_code <- inside_code_fence(out)
 
   i <- 1L
   while (i <= length(out)) {
     line <- out[i]
+    if (in_code[i]) {
+      i <- i + 1L
+      next
+    }
 
     # --- Format 1: one option per line, n consecutive lines ---
     multi <- starts_with(line, opts_lower[1]) &&

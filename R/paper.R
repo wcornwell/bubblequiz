@@ -31,6 +31,41 @@ figure_tex <- function(fig, max_height = "7cm") {
   )
 }
 
+# A fenced code block (```r ... ```) may sit between a question's stem and its
+# options, with more stem text after it if needed. Its lines are printed
+# verbatim; option shuffling never looks inside it.
+code_fence_regex <- "^\\s*```"
+
+# TRUE for every fence line and every line between a pair of fences.
+inside_code_fence <- function(lines) {
+  fence <- grepl(code_fence_regex, lines)
+  fence | cumsum(fence) %% 2 == 1
+}
+
+code_block_tex <- function(code) {
+  if (is.null(code)) return(character(0))
+  if (any(grepl("\\\\end\\{Verbatim\\}", code))) {
+    stop("A code block may not contain \\end{Verbatim}.", call. = FALSE)
+  }
+  c("\\begin{Verbatim}[fontsize=\\small, xleftmargin=1.4em, frame=leftline, framesep=6pt]",
+    code,
+    "\\end{Verbatim}")
+}
+
+# Stem text after a code block, if any.
+tail_tex <- function(tail) {
+  if (is.null(tail) || !nzchar(tail)) return(character(0))
+  sprintf("%s\\par", tex_escape_math(tail))
+}
+
+# Shared by both paper layouts: inline code (\bqcode) and code blocks.
+# Mono text has no TeX ligatures, so ' and " stay straight and -- stays two
+# hyphens, as they would in R.
+CODE_TEX_PREAMBLE <- c(
+  "\\usepackage{fancyvrb}",
+  "\\newcommand{\\bqcode}[1]{\\texttt{#1}}"
+)
+
 has_figures <- function(blocks) {
   any(vapply(blocks, function(q) !is.null(q$figure), logical(1)))
 }
@@ -43,6 +78,8 @@ latex_question_paper <- function(cfg, blocks, version) {
     }
     c(
       sprintf("\\textbf{Q%d.} %s\\par", q$number, tex_escape_math(q$question)),
+      code_block_tex(q$code),
+      tail_tex(q$tail),
       figure_tex(q$figure, cfg$figure_max_height),
       "\\begin{enumerate}[label=\\alph*., leftmargin=1.8em]",
       sprintf("  \\item %s", tex_escape_math(opts)),
@@ -56,6 +93,7 @@ latex_question_paper <- function(cfg, blocks, version) {
     "\\usepackage[a4paper, left=1.8cm, right=1.8cm, top=1.4cm, bottom=1.4cm]{geometry}",
     "\\usepackage{fontspec}",
     MAIN_FONT_TEX,
+    CODE_TEX_PREAMBLE,
     "\\usepackage{enumitem}",
     if (has_figures(blocks)) "\\usepackage{graphicx}",
     "\\setlength{\\parindent}{0pt}",
@@ -112,12 +150,32 @@ parse_question_blocks <- function(path, cfg) {
   opts <- tolower(cfg$options)
   blocks <- list()
   current <- NULL
+  in_fence <- FALSE
 
   flush <- function() {
     if (!is.null(current)) blocks[[length(blocks) + 1L]] <<- current
   }
 
   for (line in lines) {
+    if (!is.null(current) && grepl(code_fence_regex, line)) {
+      if (!in_fence) {
+        if (!is.null(current$code)) {
+          stop("Question ", current$number, " has more than one code block.", call. = FALSE)
+        }
+        if (any(!is.na(current$options))) {
+          stop("Question ", current$number, ": a code block must come before the options.",
+               call. = FALSE)
+        }
+        current$code <- character(0)
+        current$tail <- ""
+      }
+      in_fence <- !in_fence
+      next
+    }
+    if (in_fence) {
+      current$code <- c(current$code, line)
+      next
+    }
     if (grepl("^<!--\\s*Answer\\s+", line)) next
     m <- regexec("^\\*\\*Question\\s+([0-9]+)(?:\\s+\\[[^]]+\\])?:\\*\\*\\s*(.*)$", line)
     hit <- regmatches(line, m)[[1]]
@@ -153,9 +211,14 @@ parse_question_blocks <- function(path, cfg) {
     opt_hit <- regmatches(line, opt_match)[[1]]
     if (length(opt_hit) > 0) {
       current$options[[tolower(opt_hit[2])]] <- opt_hit[3]
+    } else if (!is.null(current$code)) {
+      current$tail <- trimws(paste(current$tail, trimws(line)))
     } else {
       current$question <- paste(current$question, trimws(line))
     }
+  }
+  if (in_fence) {
+    stop("Question ", current$number, " has a code block with no closing ```.", call. = FALSE)
   }
   flush()
 
@@ -184,6 +247,8 @@ latex_inline_quiz <- function(cfg, blocks, version) {
     c(
       "\\begin{samepage}",
       sprintf("\\questionblock{%d}{%s}", q$number, tex_escape_math(q$question)),
+      code_block_tex(q$code),
+      tail_tex(q$tail),
       figure_tex(q$figure, cfg$figure_max_height),
       sprintf("\\begin{enumerate}[label=\\alph*., leftmargin=1.4em, itemsep=%s, topsep=2pt]",
               cfg$spacing$option %||% "1pt"),
@@ -200,6 +265,7 @@ latex_inline_quiz <- function(cfg, blocks, version) {
     "\\usepackage[a4paper, left=1.4cm, right=1.4cm, top=0.9cm, bottom=0.9cm]{geometry}",
     "\\usepackage{fontspec}",
     MAIN_FONT_TEX,
+    CODE_TEX_PREAMBLE,
     "\\usepackage{tikz}",
     "\\usepackage{eso-pic}",
     "\\usepackage{lastpage}",
